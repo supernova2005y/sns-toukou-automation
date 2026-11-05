@@ -88,3 +88,19 @@ def test_load_posts_skips_underscore_files(tmp_path):
     write(tmp_path, "a.md", GOOD)
     write(tmp_path, "_memo.md", "not a post")
     assert [p.path.name for p in load_posts(tmp_path)] == ["a.md"]
+
+
+def test_x_weighted_length_rules():
+    from sns_post.posts import x_weighted_length
+
+    assert x_weighted_length("a" * 280) == 280
+    assert x_weighted_length("あ" * 140) == 280  # 日本語は1文字=2
+    assert x_weighted_length("見て https://example.com/very/long/path?x=1") == 4 + 1 + 23
+
+
+def test_x_japanese_141_chars_is_too_long(tmp_path):
+    ok = GOOD.replace("こんにちは #テスト", "あ" * 140).replace("[instagram, x]", "[x]")
+    assert parse_post(write(tmp_path, "ok.md", ok)).targets == ["x"]
+    ng = GOOD.replace("こんにちは #テスト", "あ" * 141).replace("[instagram, x]", "[x]")
+    with pytest.raises(PostFileError, match="282/280"):
+        parse_post(write(tmp_path, "ng.md", ng))

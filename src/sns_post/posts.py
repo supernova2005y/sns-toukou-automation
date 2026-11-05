@@ -12,6 +12,7 @@ x_text: Xだけ文面を変えたいときに書く（任意）
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -23,7 +24,27 @@ from .errors import PostFileError
 VALID_TARGETS = ("instagram", "x")
 IG_CAPTION_MAX = 2200
 IG_HASHTAG_MAX = 30
-X_TEXT_MAX = 280  # 目安。実際はXの数え方（全角は2文字分など）で決まる
+X_TEXT_MAX = 280  # Xの「重みつき文字数」の上限。数え方は x_weighted_length()
+
+# X の数え方（twitter-text v3 の設定）。この範囲の文字は1、ほか（日本語・絵文字など）は2と数える
+_X_WEIGHT1_RANGES = ((0x0000, 0x10FF), (0x2000, 0x200D), (0x2010, 0x201F), (0x2032, 0x2037))
+_X_URL = re.compile(r"https?://\S+", re.IGNORECASE)
+X_URL_LENGTH = 23  # URL は長さにかかわらず23文字と数える
+
+
+def x_weighted_length(text: str) -> int:
+    """X の重みつき文字数（目安）。日本語は1文字=2、URLは23。
+
+    絵文字の結合（ZWJ）は厳密には1つの絵文字=2だが、ここでは文字ごとに数えるので多めに出る（安全側）。
+    """
+    text = unicodedata.normalize("NFC", text)
+    urls = _X_URL.findall(text)
+    rest = _X_URL.sub("", text)
+    total = X_URL_LENGTH * len(urls)
+    for ch in rest:
+        cp = ord(ch)
+        total += 1 if any(lo <= cp <= hi for lo, hi in _X_WEIGHT1_RANGES) else 2
+    return total
 
 
 @dataclass
@@ -108,8 +129,12 @@ def validate(post: Post) -> None:
             raise PostFileError(f"{name}: キャプションが {IG_CAPTION_MAX} 文字を超えています")
         if len(re.findall(r"#\S+", post.text)) > IG_HASHTAG_MAX:
             raise PostFileError(f"{name}: ハッシュタグが {IG_HASHTAG_MAX} 個を超えています")
-    if "x" in post.targets and len(post.text_for("x")) > X_TEXT_MAX:
-        raise PostFileError(f"{name}: Xの文面が {X_TEXT_MAX} 文字を超えています（x_text で短くできます）")
+    if "x" in post.targets:
+        n = x_weighted_length(post.text_for("x"))
+        if n > X_TEXT_MAX:
+            raise PostFileError(
+                f"{name}: Xの文面が長すぎます（{n}/{X_TEXT_MAX}。日本語は1文字=2、URLは23で数えます。x_text で短くできます）"
+            )
 
 
 def save_post(post: Post) -> None:

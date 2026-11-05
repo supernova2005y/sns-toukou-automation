@@ -47,16 +47,20 @@ def _cmd_limit(_: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_refresh_token(_: argparse.Namespace) -> int:
+def _cmd_refresh_token(args: argparse.Namespace) -> int:
     import os
 
     token = os.environ.get("IG_ACCESS_TOKEN")
     if not token:
         raise ConfigError("環境変数が足りません: IG_ACCESS_TOKEN")
     result = refresh_token(token)
-    print("新しいトークンを取得しました。.env の IG_ACCESS_TOKEN を書き換えてください（画面やログに残さないこと）")
-    print(f"有効期間（秒）: {result.get('expires_in')}")
-    print(result.get("access_token"))
+    new_token = result.get("access_token")
+    if not new_token:
+        raise ApiError("新しいトークンが返ってきませんでした")
+    # トークンは画面に出さず、.env に直接書き込む（ログや画面共有に残さないため）
+    config.update_env("IG_ACCESS_TOKEN", new_token, args.env)
+    days = int(result.get("expires_in") or 0) // 86400
+    print(f"新しいトークンを {args.env} に書き込みました（有効 約{days}日）")
     return 0
 
 
@@ -76,7 +80,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.set_defaults(func=_cmd_run_due)
 
     sub.add_parser("limit", help="Instagram の投稿上限の使用状況").set_defaults(func=_cmd_limit)
-    sub.add_parser("refresh-token", help="Instagram のトークンを更新する").set_defaults(func=_cmd_refresh_token)
+    t = sub.add_parser("refresh-token", help="Instagram のトークンを更新し、.env に書き込む")
+    t.add_argument("--env", default=".env", help="書き込む .env のパス")
+    t.set_defaults(func=_cmd_refresh_token)
     return p
 
 

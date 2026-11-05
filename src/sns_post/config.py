@@ -21,6 +21,20 @@ def load_env(path: str | Path = ".env") -> None:
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
+def update_env(key: str, value: str, path: str | Path = ".env") -> None:
+    """.env の1行（KEY=...）を書き換える。なければ末尾に足す。ほかの行はそのまま残す。"""
+    p = Path(path)
+    lines = p.read_text(encoding="utf-8").splitlines() if p.exists() else []
+    for i, line in enumerate(lines):
+        if line.strip().startswith(f"{key}="):
+            lines[i] = f"{key}={value}"
+            break
+    else:
+        lines.append(f"{key}={value}")
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.environ[key] = value
+
+
 def _require(names: list[str]) -> dict[str, str]:
     missing = [n for n in names if not os.environ.get(n)]
     if missing:

@@ -84,3 +84,27 @@ def test_x_cost_estimate():
     assert has_link("詳細は https://example.com")
     assert estimate_cost_usd("こんにちは") == 0.015
     assert estimate_cost_usd("https://example.com") == 0.20
+
+
+def test_update_env_replaces_only_that_line(tmp_path, monkeypatch):
+    from sns_post.config import update_env
+
+    monkeypatch.delenv("IG_ACCESS_TOKEN", raising=False)
+    env = tmp_path / ".env"
+    env.write_text("IG_USER_ID=42\nIG_ACCESS_TOKEN=OLD\nX_API_KEY=k\n", encoding="utf-8")
+    update_env("IG_ACCESS_TOKEN", "NEW", env)
+    assert env.read_text(encoding="utf-8") == "IG_USER_ID=42\nIG_ACCESS_TOKEN=NEW\nX_API_KEY=k\n"
+
+
+def test_refresh_token_command_does_not_print_token(tmp_path, monkeypatch, capsys):
+    from sns_post import cli
+
+    env = tmp_path / ".env"
+    env.write_text("IG_ACCESS_TOKEN=OLD\n", encoding="utf-8")
+    monkeypatch.setenv("IG_ACCESS_TOKEN", "OLD")
+    monkeypatch.setattr(cli, "refresh_token", lambda t: {"access_token": "BRAND-NEW", "expires_in": 5184000})
+    assert cli.main(["refresh-token", "--env", str(env)]) == 0
+    out = capsys.readouterr().out
+    assert "BRAND-NEW" not in out
+    assert "約60日" in out
+    assert "IG_ACCESS_TOKEN=BRAND-NEW" in env.read_text(encoding="utf-8")

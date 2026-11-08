@@ -64,6 +64,15 @@ def _cmd_refresh_token(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_web(args: argparse.Namespace) -> int:
+    from .web import serve
+
+    if args.host not in ("127.0.0.1", "localhost"):
+        print("注意: この画面には認証がありません。同じネットワークの人なら誰でも予約を書き込めます\n")
+    serve(Path(args.queue), Path(args.done), args.host, args.port)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sns-post", description="Instagram と X への予約投稿（公式APIのみ）")
     sub = p.add_subparsers(dest="command", required=True)
@@ -78,6 +87,13 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--publish", action="store_true", help="実際に投稿する")
     r.add_argument("--now", help="現在時刻を指定（テスト用。タイムゾーンつきISO形式）")
     r.set_defaults(func=_cmd_run_due)
+
+    w = sub.add_parser("web", help="予約画面をブラウザで開けるようにする（投稿はしない）")
+    w.add_argument("--queue", default="posts/queue")
+    w.add_argument("--done", default="posts/done")
+    w.add_argument("--host", default="127.0.0.1", help="既定は自分のPCだけ。スマホから開くときは 0.0.0.0（認証なしに注意）")
+    w.add_argument("--port", type=int, default=8000)
+    w.set_defaults(func=_cmd_web)
 
     sub.add_parser("limit", help="Instagram の投稿上限の使用状況").set_defaults(func=_cmd_limit)
     t = sub.add_parser("refresh-token", help="Instagram のトークンを更新し、.env に書き込む")

@@ -104,3 +104,19 @@ def test_x_japanese_141_chars_is_too_long(tmp_path):
     ng = GOOD.replace("こんにちは #テスト", "あ" * 141).replace("[instagram, x]", "[x]")
     with pytest.raises(PostFileError, match="282/280"):
         parse_post(write(tmp_path, "ng.md", ng))
+
+
+def test_image_url_with_doubled_scheme_is_rejected(tmp_path):
+    import pytest
+
+    from sns_post.errors import PostFileError
+    from sns_post.posts import parse_post
+
+    f = tmp_path / "a.md"
+    f.write_text(
+        "---\npublish_at: 2026-11-08T13:10:00+09:00\ntargets: [instagram]\n"
+        "image_url: https://https://example.com/a.jpg\n---\ntest\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PostFileError, match="重なって"):
+        parse_post(f)

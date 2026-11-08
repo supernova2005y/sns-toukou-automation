@@ -16,6 +16,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import yaml
 
@@ -125,6 +126,9 @@ def validate(post: Post) -> None:
     if "instagram" in post.targets:
         if not post.image_url or not str(post.image_url).startswith("https://"):
             raise PostFileError(f"{name}: Instagram には https の image_url が必要です")
+        host = urlparse(str(post.image_url)).hostname or ""
+        if "://" in str(post.image_url)[len("https://"):] or "." not in host:
+            raise PostFileError(f"{name}: image_url の形が正しくありません（https:// が重なっていないか確認）: {post.image_url}")
         if len(post.text) > IG_CAPTION_MAX:
             raise PostFileError(f"{name}: キャプションが {IG_CAPTION_MAX} 文字を超えています")
         if len(re.findall(r"#\S+", post.text)) > IG_HASHTAG_MAX:

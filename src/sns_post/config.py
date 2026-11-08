@@ -47,6 +47,19 @@ class InstagramConfig:
     user_id: str
     access_token: str = field(repr=False)  # repr に出さない（ログに漏れないように）
     api_version: str = "v23.0"
+    # unified: Instagram API with Unified Login（新しいアプリはこちら。graph.facebook.com）
+    # instagram: 旧 Instagram ログイン方式（graph.instagram.com）
+    login: str = "unified"
+
+    @property
+    def host(self) -> str:
+        return IG_HOSTS[self.login]
+
+
+IG_HOSTS = {
+    "unified": "https://graph.facebook.com",
+    "instagram": "https://graph.instagram.com",
+}
 
 
 @dataclass(frozen=True)
@@ -59,10 +72,14 @@ class XConfig:
 
 def instagram_from_env() -> InstagramConfig:
     v = _require(["IG_USER_ID", "IG_ACCESS_TOKEN"])
+    login = (os.environ.get("IG_LOGIN") or "unified").strip().lower()
+    if login not in IG_HOSTS:
+        raise ConfigError(f"IG_LOGIN は {' か '.join(IG_HOSTS)} にしてください（今: {login}）")
     return InstagramConfig(
         user_id=v["IG_USER_ID"],
         access_token=v["IG_ACCESS_TOKEN"],
         api_version=os.environ.get("IG_API_VERSION") or "v23.0",
+        login=login,
     )
 
 

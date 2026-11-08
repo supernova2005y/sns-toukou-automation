@@ -50,6 +50,10 @@ def _cmd_limit(_: argparse.Namespace) -> int:
 def _cmd_refresh_token(args: argparse.Namespace) -> int:
     import os
 
+    login = (os.environ.get("IG_LOGIN") or "unified").strip().lower()
+    if login != "instagram":
+        print("Unified Login のトークン（システムユーザートークン）は期限がないので、更新は不要です")
+        return 0
     token = os.environ.get("IG_ACCESS_TOKEN")
     if not token:
         raise ConfigError("環境変数が足りません: IG_ACCESS_TOKEN")
@@ -96,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     w.set_defaults(func=_cmd_web)
 
     sub.add_parser("limit", help="Instagram の投稿上限の使用状況").set_defaults(func=_cmd_limit)
-    t = sub.add_parser("refresh-token", help="Instagram のトークンを更新し、.env に書き込む")
+    t = sub.add_parser("refresh-token", help="Instagram のトークンを更新し、.env に書き込む（旧 Instagram ログイン方式のみ）")
     t.add_argument("--env", default=".env", help="書き込む .env のパス")
     t.set_defaults(func=_cmd_refresh_token)
     return p

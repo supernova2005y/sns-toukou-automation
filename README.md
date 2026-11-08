@@ -68,7 +68,7 @@ sns-post check                   # 書き方の確認
 sns-post run-due                 # 下見：どれが投稿されるかを表示するだけ
 sns-post run-due --publish       # 実際に投稿（時刻が来たものだけ）
 sns-post limit                   # Instagram の投稿上限の使用状況
-sns-post refresh-token           # Instagram のトークン更新（有効60日）。新しいトークンは画面に出さず .env に書き込む
+sns-post refresh-token           # 旧 Instagram ログイン方式のトークン更新（有効60日）。Unified Login のトークンは期限がないので不要
 pytest                           # テスト
 ```
 
@@ -103,9 +103,10 @@ x_text: Xだけ文面を変えたいとき（任意）
 
 - [x] 投稿ファイルの読み込みと書き方チェック
 - [x] Instagram（画像1枚）と X（テキスト）の投稿
-- [x] 下見モード、二重投稿の防止、テスト（51件）
+- [x] 下見モード、二重投稿の防止、テスト（54件）
 - [x] X の文字数を X と同じ数え方で確認（日本語は1文字=2、URLは23）
 - [ ] 実際のアカウントでの動作確認（**未確認**。テストはAPIの代わりに偽物を使っています）
+- [ ] Instagram の Unified Login（`graph.facebook.com`）での接続（**未確認**。トークンの取得までは済み）
 - [ ] 画像の置き場所（Instagram は公開URLが必要）
 - [ ] 定期実行（PCのタスクスケジューラ、GitHub Actions など）
 - [ ] Instagram の複数枚投稿・動画・リール・ストーリーズ

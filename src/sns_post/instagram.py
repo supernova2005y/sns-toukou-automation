@@ -1,4 +1,6 @@
-"""Instagram の公式 API（Instagram ログイン方式）で画像を投稿する。
+"""Instagram の公式 API で画像を投稿する。
+
+接続先は IG_LOGIN で切り替える（unified: graph.facebook.com／instagram: graph.instagram.com）。
 
 流れ：コンテナ作成 → 準備完了を待つ → 公開。
 画像は、Meta のサーバーが取りに来られる公開URL（JPEG）に置いておく必要がある。
@@ -10,10 +12,8 @@ from typing import Callable
 
 import requests
 
-from .config import InstagramConfig
+from .config import IG_HOSTS, InstagramConfig
 from .errors import ApiError
-
-HOST = "https://graph.instagram.com"
 
 
 class InstagramClient:
@@ -32,7 +32,7 @@ class InstagramClient:
         self._sleep = sleep
 
     def _url(self, path: str) -> str:
-        return f"{HOST}/{self.config.api_version}/{path}"
+        return f"{self.config.host}/{self.config.api_version}/{path}"
 
     def _headers(self) -> dict[str, str]:
         # トークンはURLではなくヘッダーで渡す（エラー表示やログに残りにくい）
@@ -99,10 +99,11 @@ class InstagramClient:
 
 
 def refresh_token(token: str, session: requests.Session | None = None) -> dict:
-    """長期トークン（有効60日）を更新する。取得後60日以内、かつ24時間以上経ってから。"""
+    """旧 Instagram ログイン方式の長期トークン（有効60日）を更新する。
+    取得後60日以内、かつ24時間以上経ってから。Unified Login のトークン（期限なし）には使わない。"""
     s = session or requests.Session()
     resp = s.get(
-        f"{HOST}/refresh_access_token",
+        f"{IG_HOSTS['instagram']}/refresh_access_token",
         params={"grant_type": "ig_refresh_token", "access_token": token},
         timeout=30,
     )

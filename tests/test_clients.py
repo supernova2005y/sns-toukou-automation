@@ -35,7 +35,7 @@ class FakeSession:
         return self._next("GET", url, **kw)
 
 
-CONFIG = InstagramConfig(user_id="42", access_token="SECRET", api_version="v23.0")
+CONFIG = InstagramConfig(user_id="42", access_token="SECRET", api_version="v23.0", login="instagram")
 
 
 def client(responses):
@@ -102,9 +102,53 @@ def test_refresh_token_command_does_not_print_token(tmp_path, monkeypatch, capsy
     env = tmp_path / ".env"
     env.write_text("IG_ACCESS_TOKEN=OLD\n", encoding="utf-8")
     monkeypatch.setenv("IG_ACCESS_TOKEN", "OLD")
+    monkeypatch.setenv("IG_LOGIN", "instagram")
     monkeypatch.setattr(cli, "refresh_token", lambda t: {"access_token": "BRAND-NEW", "expires_in": 5184000})
     assert cli.main(["refresh-token", "--env", str(env)]) == 0
     out = capsys.readouterr().out
     assert "BRAND-NEW" not in out
     assert "約60日" in out
     assert "IG_ACCESS_TOKEN=BRAND-NEW" in env.read_text(encoding="utf-8")
+
+
+def test_unified_login_uses_graph_facebook_com():
+    cfg = InstagramConfig(user_id="42", access_token="SECRET", api_version="v23.0")
+    assert cfg.login == "unified"
+    s = FakeSession([FakeResponse({"id": "c1"}), FakeResponse({"status_code": "FINISHED"}), FakeResponse({"id": "m1"})])
+    client = InstagramClient(cfg, session=s, sleep=lambda _: None)
+    assert client.post_image("https://example.com/a.jpg", "hi") == "m1"
+    urls = [c[1] for c in s.calls]
+    assert all(u.startswith("https://graph.facebook.com/v23.0/") for u in urls)
+    assert all("SECRET" not in u for u in urls)
+
+
+def test_instagram_from_env_login(monkeypatch):
+    from sns_post.config import instagram_from_env
+    from sns_post.errors import ConfigError
+
+    monkeypatch.setenv("IG_USER_ID", "42")
+    monkeypatch.setenv("IG_ACCESS_TOKEN", "SECRET")
+    monkeypatch.delenv("IG_LOGIN", raising=False)
+    assert instagram_from_env().host == "https://graph.facebook.com"
+    monkeypatch.setenv("IG_LOGIN", "Instagram")
+    assert instagram_from_env().host == "https://graph.instagram.com"
+    monkeypatch.setenv("IG_LOGIN", "page")
+    with pytest.raises(ConfigError):
+        instagram_from_env()
+
+
+def test_refresh_token_skipped_for_unified(tmp_path, monkeypatch, capsys):
+    from sns_post import cli
+
+    env = tmp_path / ".env"
+    env.write_text("IG_ACCESS_TOKEN=OLD\n", encoding="utf-8")
+    monkeypatch.setenv("IG_ACCESS_TOKEN", "OLD")
+    monkeypatch.delenv("IG_LOGIN", raising=False)
+
+    def boom(_):
+        raise AssertionError("呼ばれてはいけない")
+
+    monkeypatch.setattr(cli, "refresh_token", boom)
+    assert cli.main(["refresh-token", "--env", str(env)]) == 0
+    assert "不要" in capsys.readouterr().out
+    assert env.read_text(encoding="utf-8") == "IG_ACCESS_TOKEN=OLD\n"

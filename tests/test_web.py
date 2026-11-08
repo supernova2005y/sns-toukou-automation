@@ -125,3 +125,129 @@ def test_http_error_message_is_readable(server):
     url, _ = server
     status, data = _post(url, {**GOOD, "publish_at": "2026-11-01T20:00:00+09:00"})
     assert status == 400 and "過ぎています" in data["error"] and ".md" not in data["error"]
+
+
+# --- 編集・取り消し ---
+from sns_post.posts import save_post  # noqa: E402
+from sns_post.web import cancel_post, file_version, read_post, update_post  # noqa: E402
+
+
+def _version(post):
+    return file_version(post.path)
+
+
+def test_update_keeps_name_when_time_is_same(tmp_path):
+    q = tmp_path / "queue"
+    post = create_post(dict(GOOD), q, NOW)
+    new = update_post(post.path.name, {**GOOD, "text": "書き直しました", "version": _version(post)}, q, NOW)
+    assert new.path == post.path
+    assert parse_post(new.path).text == "書き直しました"
+
+
+def test_update_renames_when_time_changes(tmp_path):
+    q = tmp_path / "queue"
+    post = create_post(dict(GOOD), q, NOW)
+    new = update_post(post.path.name, {**GOOD, "publish_at": "2026-11-12T09:30:00+09:00", "version": _version(post)}, q, NOW)
+    assert new.path.name == "2026-11-12_0930.md"
+    assert not post.path.exists()
+    assert [p.name for p in q.glob("*.md")] == ["2026-11-12_0930.md"]
+
+
+def test_update_can_move_an_overdue_post_to_the_future(tmp_path):
+    q = tmp_path / "queue"
+    post = create_post(dict(GOOD), q, NOW)
+    later = datetime(2026, 11, 12, 0, 0, tzinfo=JST)  # 予約時刻を過ぎた
+    new = update_post(post.path.name, {**GOOD, "publish_at": "2026-11-13T20:00:00+09:00", "version": _version(post)}, q, later)
+    assert new.publish_at.day == 13
+
+
+def test_update_drops_image_when_instagram_is_removed(tmp_path):
+    q = tmp_path / "queue"
+    post = create_post(dict(GOOD), q, NOW)
+    new = update_post(post.path.name, {**GOOD, "targets": ["x"], "version": _version(post)}, q, NOW)
+    assert parse_post(new.path).image_url is None
+
+
+def test_update_refuses_when_file_changed_since_opened(tmp_path):
+    q = tmp_path / "queue"
+    post = create_post(dict(GOOD), q, NOW)
+    old_version = _version(post)
+    post.text = "ほかの場所で書き換え"
+    save_post(post)
+    with pytest.raises(PostFileError, match="読み込み直して"):
+        update_post(post.path.name, {**GOOD, "version": old_version}, q, NOW)
+    assert parse_post(post.path).text == "ほかの場所で書き換え"
+
+
+def test_partly_posted_cannot_be_edited_or_cancelled(tmp_path):
+    q = tmp_path / "queue"
+    post = create_post(dict(GOOD), q, NOW)
+    post.results = {"instagram": "123"}
+    save_post(post)
+    v = _version(post)
+    with pytest.raises(PostFileError, match="投稿済み"):
+        update_post(post.path.name, {**GOOD, "version": v}, q, NOW)
+    with pytest.raises(PostFileError, match="投稿済み"):
+        cancel_post(post.path.name, v, q, tmp_path / "cancelled")
+    assert parse_post(post.path).results == {"instagram": "123"}
+    assert read_post(post.path.name, q)["editable"] is False
+
+
+def test_cancel_moves_file_instead_of_deleting(tmp_path):
+    q, c = tmp_path / "queue", tmp_path / "cancelled"
+    post = create_post(dict(GOOD), q, NOW)
+    dest = cancel_post(post.path.name, _version(post), q, c)
+    assert not post.path.exists() and dest.exists()
+    assert list_posts(q, tmp_path / "done", NOW) == []
+
+
+@pytest.mark.parametrize("name", ["../secret.md", "..%2Fsecret.md", "_template.md", ".hidden.md", "a.txt", "nothing.md"])
+def test_names_outside_the_queue_are_not_found(tmp_path, name):
+    q = tmp_path / "queue"
+    q.mkdir()
+    (tmp_path / "secret.md").write_text("x", encoding="utf-8")
+    with pytest.raises(LookupError):
+        read_post(name, q)
+    with pytest.raises(LookupError):
+        cancel_post(name, "x", q, tmp_path / "cancelled")
+    assert (tmp_path / "secret.md").exists()
+
+
+def _call(url, method, path, body=None, headers=None):
+    req = urllib.request.Request(
+        url + path,
+        data=None if body is None else json.dumps(body).encode(),
+        headers={"Content-Type": "application/json", **(headers or {})},
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(req) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def test_http_edit_and_cancel_round_trip(server):
+    url, tmp = server
+    _, created = _post(url, GOOD)
+    name = created["post"]["name"]
+    assert created["post"]["editable"] is True
+
+    status, got = _call(url, "GET", f"/api/posts/{name}")
+    assert status == 200 and got["post"]["text"] == "新作が入りました"
+    v = got["post"]["version"]
+
+    status, edited = _call(url, "PUT", f"/api/posts/{name}", {**GOOD, "text": "変更", "version": v})
+    assert status == 200 and edited["post"]["excerpt"] == "変更"
+
+    status, _ = _call(url, "POST", f"/api/posts/{name}/cancel", {"version": v})
+    assert status == 409  # 古い目印では取り消せない
+
+    v2 = _call(url, "GET", f"/api/posts/{name}")[1]["post"]["version"]
+    status, _ = _call(url, "POST", f"/api/posts/{name}/cancel", {"version": v2}, {"Origin": "https://evil.example"})
+    assert status == 403
+    status, data = _call(url, "POST", f"/api/posts/{name}/cancel", {"version": v2})
+    assert status == 200 and (tmp / "cancelled" / data["cancelled"]).exists()
+
+    status, _ = _call(url, "GET", f"/api/posts/{name}")
+    assert status == 404

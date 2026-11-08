@@ -43,6 +43,7 @@ label,.lbl{font-size:13px;font-weight:500;color:var(--sub)}
 .field{display:flex;flex-direction:column;gap:6px}
 textarea,input[type=url],input[type=datetime-local]{border:1px solid var(--line);border-radius:12px;padding:12px;font:inherit;font-size:16px;background:#fff;color:var(--ink);width:100%}
 textarea{resize:vertical;min-height:120px;line-height:1.6}
+#xText{min-height:64px}
 .counter{display:flex;justify-content:flex-end;gap:12px;font-size:12px;color:var(--sub)}
 .counter .over{color:var(--red);font-weight:700}
 .hint{font-size:12px;color:var(--sub);margin:0}
@@ -54,6 +55,10 @@ textarea{resize:vertical;min-height:120px;line-height:1.6}
 .submit{white-space:nowrap;flex:0 0 auto;height:48px;padding:0 22px;border:0;border-radius:12px;font:inherit;font-size:15px;font-weight:700;background:var(--green);color:#fff;cursor:pointer}
 .submit:disabled{background:#DCD6C3;color:#6E6853;cursor:not-allowed}
 .msg{font-size:13px;color:var(--red);margin:0}
+button.sched{cursor:pointer;font:inherit;color:inherit}
+button.sched:hover{border-color:var(--teal)}
+.locked{opacity:.85}
+.danger{align-self:flex-start;height:44px;padding:0 4px;border:0;background:transparent;font:inherit;font-size:14px;font-weight:500;color:var(--red);cursor:pointer;text-decoration:underline;text-underline-offset:3px}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 16px;border-radius:999px;font-size:14px;white-space:nowrap}
 :focus-visible{outline:2px solid var(--teal);outline-offset:2px}
 [hidden]{display:none!important}
@@ -74,10 +79,10 @@ textarea{resize:vertical;min-height:120px;line-height:1.6}
 </main>
 
 <div class="scrim" id="scrim" hidden></div>
-<section class="sheet" id="sheet" aria-label="新しい投稿" hidden>
+<section class="sheet" id="sheet" aria-labelledby="sheetTitle" hidden>
   <div class="grab" aria-hidden="true"></div>
   <div class="row">
-    <h2>新しい投稿</h2>
+    <h2 id="sheetTitle">新しい投稿</h2>
     <button type="button" class="icon-btn" id="closeBtn" aria-label="閉じる">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
     </button>
@@ -92,6 +97,10 @@ textarea{resize:vertical;min-height:120px;line-height:1.6}
     <input type="url" id="image" placeholder="https://…/photo.jpg" inputmode="url" autocomplete="off">
     <p class="hint">いまは画像1枚。PCから画像を選んで置く仕組みはこれから作ります</p>
   </div>
+  <div class="field" id="xTextField">
+    <label for="xText">Xだけ別の文面（任意）</label>
+    <textarea id="xText" rows="2" placeholder="空ならXにも上の本文を投稿します"></textarea>
+  </div>
   <div class="chips">
     <button type="button" class="chip" id="chipIg" aria-pressed="true">Instagram</button>
     <button type="button" class="chip" id="chipX" aria-pressed="true">X</button>
@@ -105,13 +114,14 @@ textarea{resize:vertical;min-height:120px;line-height:1.6}
     <p class="hint" id="whenLabel"></p>
   </div>
   <p class="msg" id="msg" role="alert"></p>
+  <button type="button" class="danger" id="cancelBtn" hidden>この予約を取り消す</button>
 </section>
 <div class="toast" id="toast" role="status" hidden></div>
 
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const state = { ig: true, x: true, sending: false };
+const state = { ig: true, x: true, sending: false, editing: null };  // editing: { name, version }
 
 // X と同じ数え方（日本語は1文字=2、URLは23）。サーバー側の x_weighted_length と同じ
 function xLen(s) {
@@ -151,7 +161,9 @@ function svgClock(color) {
 const DONE_COLORS = ["#7C9A7E", "#A88A6A", "#6F8FA0", "#B07A5A", "#9A7F8E", "#8E9A6B"];
 
 function tile(p, i) {
-  const el = document.createElement("div");
+  const editable = p.status === "scheduled" || p.status === "overdue";
+  const el = document.createElement(editable ? "button" : "div");
+  if (editable) el.type = "button";
   el.className = "tile";
   if (p.status === "error") {
     el.classList.add("error");
@@ -180,6 +192,13 @@ function tile(p, i) {
   t.textContent = p.status === "overdue" ? "時刻を過ぎています" : to;
   const ex = document.createElement("span"); ex.className = "ex"; ex.textContent = p.excerpt;
   el.append(w, t, ex);
+  if (p.editable) {
+    el.setAttribute("aria-label", `${when} ${to} の予約を変更`);
+    el.addEventListener("click", () => openEdit(p.name));
+  } else {
+    el.classList.add("locked");
+    el.addEventListener("click", () => toast("一部の投稿先に投稿済みのため、変更できません"));
+  }
   el.title = p.name;
   return el;
 }
@@ -201,7 +220,8 @@ async function load() {
 
 function refresh() {
   const text = $("text").value;
-  const xc = xLen(text);
+  const xText = $("xText").value.trim();
+  const xc = xLen(xText || text);
   $("igCount").textContent = `Instagram ${text.length}/2200`;
   $("xCount").textContent = `X ${xc}/280`;
   $("xCount").className = state.x && xc > 280 ? "over" : "";
@@ -209,6 +229,7 @@ function refresh() {
   $("chipIg").setAttribute("aria-pressed", String(state.ig));
   $("chipX").setAttribute("aria-pressed", String(state.x));
   $("imageField").hidden = !state.ig;
+  $("xTextField").hidden = !state.x;
   const v = $("when").value;
   const d = v ? new Date(v) : null;
   const future = d && d > new Date();
@@ -219,13 +240,50 @@ function refresh() {
   $("submitBtn").disabled = !ok || state.sending;
 }
 
-function openSheet() {
+let returnFocus = null;
+function showSheet(editing) {
+  state.editing = editing;
+  $("sheetTitle").textContent = editing ? "予約を変更" : "新しい投稿";
+  $("submitBtn").textContent = editing ? "変更する" : "予約する";
+  $("cancelBtn").hidden = !editing;
   $("msg").textContent = "";
-  if (!$("when").value) $("when").value = localValue(nextDefault());
+  returnFocus = document.activeElement;
   $("scrim").hidden = false; $("sheet").hidden = false;
   refresh(); $("text").focus();
 }
-function closeSheet() { $("scrim").hidden = true; $("sheet").hidden = true; $("openBtn").focus(); }
+function openSheet() {
+  if (state.editing) {  // 編集の途中の内容は持ち越さない
+    ["text", "xText", "image", "when"].forEach((id) => { $(id).value = ""; });
+    state.ig = true; state.x = true;
+  }
+  if (!$("when").value) $("when").value = localValue(nextDefault());
+  showSheet(null);
+}
+async function openEdit(name) {
+  try {
+    const res = await fetch(`/api/posts/${encodeURIComponent(name)}`);
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || "予約を開けませんでした"); await load(); return; }
+    const p = data.post;
+    $("text").value = p.text;
+    $("xText").value = p.x_text || "";
+    $("image").value = p.image_url || "";
+    $("when").value = localValue(new Date(p.publish_at));
+    state.ig = p.targets.includes("instagram");
+    state.x = p.targets.includes("x");
+    showSheet({ name: p.name, version: p.version });
+  } catch (e) {
+    toast("サーバーにつながりません");
+  }
+}
+function closeSheet() {
+  $("scrim").hidden = true; $("sheet").hidden = true;
+  (returnFocus && document.contains(returnFocus) ? returnFocus : $("openBtn")).focus();
+}
+function clearForm() {
+  ["text", "xText", "image", "when"].forEach((id) => { $(id).value = ""; });
+  state.ig = true; state.x = true; state.editing = null;
+}
 function toast(t) {
   $("toast").textContent = t; $("toast").hidden = false;
   setTimeout(() => { $("toast").hidden = true; }, 2500);
@@ -233,19 +291,23 @@ function toast(t) {
 
 async function submit() {
   state.sending = true; refresh(); $("msg").textContent = "";
+  const editing = state.editing;
   const body = {
     text: $("text").value,
     targets: [state.ig && "instagram", state.x && "x"].filter(Boolean),
     image_url: state.ig ? $("image").value.trim() : null,
+    x_text: state.x ? $("xText").value.trim() || null : null,
     publish_at: withOffset($("when").value),
   };
+  if (editing) body.version = editing.version;
   try {
-    const res = await fetch("/api/posts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const url = editing ? `/api/posts/${encodeURIComponent(editing.name)}` : "/api/posts";
+    const res = await fetch(url, { method: editing ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await res.json();
-    if (!res.ok) { $("msg").textContent = data.error || "予約できませんでした"; return; }
-    $("text").value = ""; $("image").value = ""; $("when").value = "";
+    if (!res.ok) { $("msg").textContent = data.error || "保存できませんでした"; return; }
+    clearForm();
     closeSheet();
-    toast(`${fmt(new Date(data.post.publish_at))} に予約しました`);
+    toast(`${fmt(new Date(data.post.publish_at))} に${editing ? "変更" : "予約"}しました`);
     await load();
   } catch (e) {
     $("msg").textContent = "サーバーにつながりません。sns-post web が動いているか確認してください";
@@ -262,6 +324,30 @@ $("sheet").addEventListener("keydown", (e) => { if (e.key === "Escape") closeShe
 $("chipIg").addEventListener("click", () => { state.ig = !state.ig; refresh(); });
 $("chipX").addEventListener("click", () => { state.x = !state.x; refresh(); });
 $("submitBtn").addEventListener("click", submit);
+
+async function cancelPost() {
+  const editing = state.editing;
+  if (!editing || state.sending) return;
+  if (!confirm("この予約を取り消しますか？\n（ファイルは posts/cancelled/ に移るので、あとから戻せます）")) return;
+  state.sending = true; refresh(); $("msg").textContent = "";
+  try {
+    const res = await fetch(`/api/posts/${encodeURIComponent(editing.name)}/cancel`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ version: editing.version }),
+    });
+    const data = await res.json();
+    if (!res.ok) { $("msg").textContent = data.error || "取り消せませんでした"; return; }
+    clearForm();
+    closeSheet();
+    toast("予約を取り消しました");
+    await load();
+  } catch (e) {
+    $("msg").textContent = "サーバーにつながりません。sns-post web が動いているか確認してください";
+  } finally {
+    state.sending = false; refresh();
+  }
+}
+$("cancelBtn").addEventListener("click", cancelPost);
+$("xText").addEventListener("input", refresh);
 load();
 </script>
 </body>

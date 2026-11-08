@@ -2,19 +2,22 @@
 
 `sns-post web` で起動し、ブラウザで開く。標準ライブラリだけで動く。
 
-- 画面からは投稿ファイルを `posts/queue/` に書き出すだけ。**ここから投稿はしない**
+- 画面からは投稿ファイルを `posts/queue/` に書き出す・書き換える・取り消すだけ。**ここから投稿はしない**
   （実際の投稿は今までどおり `sns-post run-due --publish`）
+- 取り消した予約は消さずに `posts/cancelled/` へ移す（間違えても戻せるように）
+- どこか1つにでも投稿済みの予約は、編集も取り消しもできない（二重投稿・記録の食い違いを防ぐため）
 - 既定では自分のPC（127.0.0.1）からしか開けない。認証がないので、外に公開しない
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from .errors import PostFileError
 from .posts import VALID_TARGETS, Post, _parse_time, parse_post, save_post, validate
@@ -32,6 +35,7 @@ def _summary(post: Post, status: str) -> dict:
         "excerpt": post.text.replace("\n", " ")[:EXCERPT_LEN],
         "image_url": post.image_url,
         "posted": sorted(post.results),
+        "editable": status in ("scheduled", "overdue") and not post.results,
     }
 
 
@@ -61,8 +65,8 @@ def list_posts(queue: Path, done: Path, now: datetime) -> list[dict]:
     return pending + finished
 
 
-def create_post(data: dict, queue: Path, now: datetime) -> Post:
-    """画面から送られた内容を検査して、投稿ファイルを1つ書き出す。"""
+def _build_post(data: dict, now: datetime) -> Post:
+    """画面から送られた内容を検査して Post にする（ファイルにはまだ書かない）。"""
     if not isinstance(data, dict):
         raise PostFileError("送られた内容の形が正しくありません")
     targets = data.get("targets")
@@ -77,34 +81,112 @@ def create_post(data: dict, queue: Path, now: datetime) -> Post:
         raise PostFileError("投稿する日時が過ぎています。これから先の日時にしてください")
     image_url = str(data.get("image_url") or "").strip() or None
     x_text = str(data.get("x_text") or "").strip() or None
-
+    targets = list(dict.fromkeys(targets))
     post = Post(
         path=placeholder,
         publish_at=publish_at,
-        targets=list(dict.fromkeys(targets)),
+        targets=targets,
         text=text,
-        image_url=image_url,
-        x_text=x_text,
+        image_url=image_url if "instagram" in targets else None,
+        x_text=x_text if "x" in targets else None,
     )
     validate(post)
+    return post
 
-    queue.mkdir(parents=True, exist_ok=True)
+
+def _free_path(queue: Path, publish_at: datetime) -> Path:
     stem = publish_at.strftime("%Y-%m-%d_%H%M")
     path = queue / f"{stem}.md"
     n = 2
     while path.exists():
         path = queue / f"{stem}_{n}.md"
         n += 1
-    post.path = path
+    return path
+
+
+def file_version(path: Path) -> str:
+    """ファイルの中身から作る目印。画面で開いたあとに書き換わっていないかの確認に使う。"""
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+
+
+def create_post(data: dict, queue: Path, now: datetime) -> Post:
+    """画面から送られた内容を検査して、投稿ファイルを1つ書き出す。"""
+    post = _build_post(data, now)
+    queue.mkdir(parents=True, exist_ok=True)
+    post.path = _free_path(queue, post.publish_at)
     save_post(post)
     return post
+
+
+def _queue_path(name: str, queue: Path) -> Path:
+    """予約中フォルダの中のファイルだけを返す（../ などでほかの場所を触らせない）。"""
+    if not isinstance(name, str) or not name.endswith(".md") or name.startswith(("_", ".")) or "/" in name or "\\" in name:
+        raise LookupError("その予約は見つかりません")
+    path = queue / name
+    if path.resolve().parent != queue.resolve() or not path.is_file():
+        raise LookupError("その予約は見つかりません")
+    return path
+
+
+def _find_editable(name: str, queue: Path, version: object) -> Post:
+    """予約中のファイルを名前で探す。投稿済みの先があるもの・開いたあとに変わったものは断る。"""
+    path = _queue_path(name, queue)
+    if version != file_version(path):
+        raise PostFileError("ほかの場所で予約が変わりました。画面を読み込み直してください")
+    post = parse_post(path)
+    if post.results:
+        raise PostFileError("この予約は一部の投稿先に投稿済みなので、変更・取り消しはできません")
+    return post
+
+
+def read_post(name: str, queue: Path) -> dict:
+    """編集画面に出す内容。"""
+    path = _queue_path(name, queue)
+    post = parse_post(path)
+    return {
+        "name": name,
+        "version": file_version(path),
+        "publish_at": post.publish_at.isoformat(),
+        "targets": post.targets,
+        "text": post.text,
+        "image_url": post.image_url,
+        "x_text": post.x_text,
+        "editable": not post.results,
+    }
+
+
+def update_post(name: str, data: dict, queue: Path, now: datetime) -> Post:
+    """予約を書き換える。日時が変わったらファイル名も変える。"""
+    old = _find_editable(name, queue, data.get("version") if isinstance(data, dict) else None)
+    post = _build_post(data, now)
+    same_time = old.publish_at == post.publish_at
+    post.path = old.path if same_time else _free_path(queue, post.publish_at)
+    save_post(post)
+    if post.path != old.path:
+        old.path.unlink()
+    return post
+
+
+def cancel_post(name: str, version: object, queue: Path, cancelled: Path) -> Path:
+    """予約を取り消す。消さずに cancelled/ へ移す。"""
+    post = _find_editable(name, queue, version)
+    cancelled.mkdir(parents=True, exist_ok=True)
+    dest = cancelled / post.path.name
+    n = 2
+    while dest.exists():
+        dest = cancelled / f"{post.path.stem}_{n}.md"
+        n += 1
+    post.path.rename(dest)
+    return dest
 
 
 def _index_html() -> bytes:
     return resources.files("sns_post").joinpath("static/index.html").read_bytes()
 
 
-def make_handler(queue: Path, done: Path, clock=lambda: datetime.now(timezone.utc)):
+def make_handler(queue: Path, done: Path, clock=lambda: datetime.now(timezone.utc), cancelled: Path | None = None):
+    cancelled = cancelled or queue.parent / "cancelled"
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "sns-post"
 
@@ -123,38 +205,88 @@ def make_handler(queue: Path, done: Path, clock=lambda: datetime.now(timezone.ut
         def _json(self, status: int, obj: dict) -> None:
             self._send(status, json.dumps(obj, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
 
+        def _route(self) -> tuple[str | None, str | None]:
+            """/api/posts → (None, None)、/api/posts/<name> → (name, None)、/api/posts/<name>/cancel → (name, "cancel")"""
+            parts = urlsplit(self.path).path.split("/")
+            if parts[:3] != ["", "api", "posts"]:
+                return "", None
+            rest = [unquote(p) for p in parts[3:] if p]
+            if not rest:
+                return None, None
+            if len(rest) == 1:
+                return rest[0], None
+            if len(rest) == 2:
+                return rest[0], rest[1]
+            return "", None
+
+        def _read_json(self) -> dict | None:
+            """書き込みの受け付け。別のサイトから勝手に書き込まれないよう、JSON と同じ出どころだけ通す。"""
+            if not (self.headers.get("Content-Type") or "").startswith("application/json"):
+                self._json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "JSON で送ってください"})
+                return None
+            origin = self.headers.get("Origin")
+            if origin and urlsplit(origin).netloc != self.headers.get("Host"):
+                self._json(HTTPStatus.FORBIDDEN, {"error": "この画面以外からは変更できません"})
+                return None
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0 or length > MAX_BODY:
+                self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "内容が大きすぎます"})
+                return None
+            try:
+                return json.loads(self.rfile.read(length).decode("utf-8"))
+            except ValueError:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "送られた内容の形が正しくありません"})
+                return None
+
+        def _run(self, action) -> None:
+            try:
+                status, obj = action()
+            except LookupError as e:
+                self._json(HTTPStatus.NOT_FOUND, {"error": str(e).strip("'\"")})
+                return
+            except (ValueError, PostFileError) as e:
+                msg = str(e).replace("新しい投稿.md: ", "")
+                conflict = "変わりました" in msg or "投稿済み" in msg
+                self._json(HTTPStatus.CONFLICT if conflict else HTTPStatus.BAD_REQUEST, {"error": msg})
+                return
+            self._json(status, obj)
+
         def do_GET(self):
             path = urlsplit(self.path).path
             if path in ("/", "/index.html"):
                 self._send(HTTPStatus.OK, _index_html(), "text/html; charset=utf-8")
-            elif path == "/api/posts":
+                return
+            name, sub = self._route()
+            if name is None and sub is None:
                 self._json(HTTPStatus.OK, {"posts": list_posts(queue, done, clock())})
+            elif name and sub is None:
+                self._run(lambda: (HTTPStatus.OK, {"post": read_post(name, queue)}))
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "見つかりません"})
 
         def do_POST(self):
-            if urlsplit(self.path).path != "/api/posts":
+            name, sub = self._route()
+            if not (name is None and sub is None) and not (name and sub == "cancel"):
                 self._json(HTTPStatus.NOT_FOUND, {"error": "見つかりません"})
                 return
-            # 別のサイトから勝手に予約を書き込まれないよう、JSON と同じ出どころからの送信だけ受け付ける
-            if not (self.headers.get("Content-Type") or "").startswith("application/json"):
-                self._json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "JSON で送ってください"})
+            data = self._read_json()
+            if data is None:
                 return
-            origin = self.headers.get("Origin")
-            if origin and urlsplit(origin).netloc != self.headers.get("Host"):
-                self._json(HTTPStatus.FORBIDDEN, {"error": "この画面以外からは予約できません"})
+            if name is None:
+                self._run(lambda: (HTTPStatus.CREATED, {"post": _summary(create_post(data, queue, clock()), "scheduled")}))
+            else:
+                version = data.get("version") if isinstance(data, dict) else None
+                self._run(lambda: (HTTPStatus.OK, {"cancelled": cancel_post(name, version, queue, cancelled).name}))
+
+        def do_PUT(self):
+            name, sub = self._route()
+            if not name or sub is not None:
+                self._json(HTTPStatus.NOT_FOUND, {"error": "見つかりません"})
                 return
-            length = int(self.headers.get("Content-Length") or 0)
-            if length <= 0 or length > MAX_BODY:
-                self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "内容が大きすぎます"})
+            data = self._read_json()
+            if data is None:
                 return
-            try:
-                data = json.loads(self.rfile.read(length).decode("utf-8"))
-                post = create_post(data, queue, clock())
-            except (ValueError, PostFileError) as e:
-                self._json(HTTPStatus.BAD_REQUEST, {"error": str(e).replace("新しい投稿.md: ", "")})
-                return
-            self._json(HTTPStatus.CREATED, {"post": _summary(post, "scheduled")})
+            self._run(lambda: (HTTPStatus.OK, {"post": _summary(update_post(name, data, queue, clock()), "scheduled")}))
 
     return Handler
 

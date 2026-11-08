@@ -36,7 +36,18 @@ def _cmd_run_due(args: argparse.Namespace) -> int:
             x = XClient(config.x_from_env())
     else:
         print("下見モードです。実際に投稿するときは --publish をつけてください\n")
-    for line in run_due(posts, now, args.publish, Path(args.done), ig, x):
+    if args.publish:
+        from .publisher import BusyError, publish_lock
+
+        try:
+            with publish_lock(Path(args.queue).parent):
+                posts = load_posts(args.queue)  # ロックを取ってから読み直す（画面で投稿済みのものを除くため）
+                lines = run_due(posts, now, True, Path(args.done), ig, x)
+        except BusyError as e:
+            raise ApiError(str(e)) from e
+    else:
+        lines = run_due(posts, now, False, Path(args.done), ig, x)
+    for line in lines:
         print(line)
     return 0
 
@@ -73,7 +84,7 @@ def _cmd_web(args: argparse.Namespace) -> int:
 
     if args.host not in ("127.0.0.1", "localhost"):
         print("注意: この画面には認証がありません。同じネットワークの人なら誰でも予約を書き込めます\n")
-    serve(Path(args.queue), Path(args.done), args.host, args.port)
+    serve(Path(args.queue), Path(args.done), args.host, args.port, publish=args.publish)
     return 0
 
 
@@ -92,11 +103,12 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--now", help="現在時刻を指定（テスト用。タイムゾーンつきISO形式）")
     r.set_defaults(func=_cmd_run_due)
 
-    w = sub.add_parser("web", help="予約画面をブラウザで開けるようにする（投稿はしない）")
+    w = sub.add_parser("web", help="予約画面をブラウザで開けるようにする（--publish なしなら投稿はしない）")
     w.add_argument("--queue", default="posts/queue")
     w.add_argument("--done", default="posts/done")
     w.add_argument("--host", default="127.0.0.1", help="既定は自分のPCだけ。スマホから開くときは 0.0.0.0（認証なしに注意）")
     w.add_argument("--port", type=int, default=8000)
+    w.add_argument("--publish", action="store_true", help="画面から投稿する（今すぐ投稿・時刻が来たら自動投稿）。自分のPCで開くときだけ")
     w.set_defaults(func=_cmd_web)
 
     sub.add_parser("limit", help="Instagram の投稿上限の使用状況").set_defaults(func=_cmd_limit)

@@ -54,11 +54,20 @@ textarea{resize:vertical;min-height:120px;line-height:1.6}
 .submit-row input{flex:1 1 auto;min-width:0;height:48px;padding:0 12px}
 .submit{white-space:nowrap;flex:0 0 auto;height:48px;padding:0 22px;border:0;border-radius:12px;font:inherit;font-size:15px;font-weight:700;background:var(--green);color:#fff;cursor:pointer}
 .submit:disabled{background:#DCD6C3;color:#6E6853;cursor:not-allowed}
-.msg{font-size:13px;color:var(--red);margin:0}
+.msg{font-size:13px;color:var(--red);margin:0;white-space:pre-wrap}
 button.sched{cursor:pointer;font:inherit;color:inherit}
 button.sched:hover{border-color:var(--teal)}
 .locked{opacity:.85}
 .danger{align-self:flex-start;height:44px;padding:0 4px;border:0;background:transparent;font:inherit;font-size:14px;font-weight:500;color:var(--red);cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+.mode{font-size:12px;font-weight:700;padding:4px 10px;border-radius:999px;margin-left:8px;vertical-align:middle;background:#ECE6D3;color:#4A4636}
+.mode.on{background:var(--green);color:#fff}
+.publish{height:48px;border:1.5px solid var(--green);border-radius:12px;background:#fff;color:var(--green);font:inherit;font-size:15px;font-weight:700;cursor:pointer}
+.publish:disabled{border-color:#DCD6C3;color:#6E6853;cursor:not-allowed}
+.logbox{margin-top:20px;font-size:12px;color:var(--sub)}
+.logbox h3{font-size:13px;margin:0 0 6px;color:var(--ink)}
+.logbox ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.logbox li{background:var(--sheet);border:1px solid var(--line);border-radius:8px;padding:6px 8px;white-space:pre-wrap;word-break:break-all}
+.logbox li.bad{border-color:var(--red);color:var(--red)}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 16px;border-radius:999px;font-size:14px;white-space:nowrap}
 :focus-visible{outline:2px solid var(--teal);outline-offset:2px}
 [hidden]{display:none!important}
@@ -67,7 +76,7 @@ button.sched:hover{border-color:var(--teal)}
 <body>
 <main>
   <header>
-    <h1>投稿</h1>
+    <h1>投稿<span class="mode" id="mode" hidden></span></h1>
     <div class="counts"><span class="pill" id="countSched">予約 0</span><span class="pill done" id="countDone">済み 0</span></div>
   </header>
   <div class="grid" id="grid">
@@ -76,6 +85,10 @@ button.sched:hover{border-color:var(--teal)}
       新しい予約
     </button>
   </div>
+  <section class="logbox" id="logBox" hidden>
+    <h3>最近の投稿の記録</h3>
+    <ul id="logList"></ul>
+  </section>
 </main>
 
 <div class="scrim" id="scrim" hidden></div>
@@ -114,6 +127,7 @@ button.sched:hover{border-color:var(--teal)}
     <p class="hint" id="whenLabel"></p>
   </div>
   <p class="msg" id="msg" role="alert"></p>
+  <button type="button" class="publish" id="publishBtn" hidden>保存した内容で今すぐ投稿</button>
   <button type="button" class="danger" id="cancelBtn" hidden>この予約を取り消す</button>
 </section>
 <div class="toast" id="toast" role="status" hidden></div>
@@ -121,7 +135,7 @@ button.sched:hover{border-color:var(--teal)}
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const state = { ig: true, x: true, sending: false, editing: null };  // editing: { name, version }
+const state = { ig: true, x: true, sending: false, editing: null, publishEnabled: false, loaded: "" };  // editing: { name, version }
 
 // X と同じ数え方（日本語は1文字=2、URLは23）。サーバー側の x_weighted_length と同じ
 function xLen(s) {
@@ -197,7 +211,10 @@ function tile(p, i) {
     el.addEventListener("click", () => openEdit(p.name));
   } else {
     el.classList.add("locked");
-    el.addEventListener("click", () => toast("一部の投稿先に投稿済みのため、変更できません"));
+    el.addEventListener("click", () => {
+      if (state.publishEnabled) publishRest(p);
+      else toast("一部の投稿先に投稿済みのため、変更できません");
+    });
   }
   el.title = p.name;
   return el;
@@ -205,7 +222,15 @@ function tile(p, i) {
 
 async function load() {
   const res = await fetch("/api/posts");
-  const { posts } = await res.json();
+  const { posts, publish_enabled } = await res.json();
+  state.publishEnabled = !!publish_enabled;
+  $("mode").hidden = false;
+  $("mode").className = state.publishEnabled ? "mode on" : "mode";
+  $("mode").textContent = state.publishEnabled ? "投稿モード" : "下見モード";
+  $("mode").title = state.publishEnabled
+    ? "「今すぐ投稿」と、時刻が来た予約の自動投稿をします（この画面のサーバーを止めると止まります）"
+    : "ここからは投稿しません。投稿するときは sns-post web --publish で起動します";
+  loadLog();
   const grid = $("grid");
   grid.querySelectorAll(".tile:not(.new), .empty").forEach((n) => n.remove());
   posts.forEach((p, i) => grid.append(tile(p, i)));
@@ -238,6 +263,12 @@ function refresh() {
   const ok = text.trim() && (state.ig || state.x) && future
     && !(state.x && xc > 280) && !(state.ig && (text.length > 2200 || !img.startsWith("https://")));
   $("submitBtn").disabled = !ok || state.sending;
+  const dirty = state.editing && snapshot() !== state.loaded;
+  $("publishBtn").disabled = state.sending || !!dirty;
+  $("publishBtn").textContent = dirty ? "変更を保存してから投稿できます" : "保存した内容で今すぐ投稿";
+}
+function snapshot() {
+  return JSON.stringify([$("text").value, $("xText").value, $("image").value, $("when").value, state.ig, state.x]);
 }
 
 let returnFocus = null;
@@ -246,6 +277,8 @@ function showSheet(editing) {
   $("sheetTitle").textContent = editing ? "予約を変更" : "新しい投稿";
   $("submitBtn").textContent = editing ? "変更する" : "予約する";
   $("cancelBtn").hidden = !editing;
+  $("publishBtn").hidden = !(editing && state.publishEnabled);
+  state.loaded = editing ? snapshot() : "";
   $("msg").textContent = "";
   returnFocus = document.activeElement;
   $("scrim").hidden = false; $("sheet").hidden = false;
@@ -348,6 +381,74 @@ async function cancelPost() {
 }
 $("cancelBtn").addEventListener("click", cancelPost);
 $("xText").addEventListener("input", refresh);
+
+function confirmText(targets) {
+  const to = targets.map((t) => TARGET[t] || t).join("・");
+  const cost = targets.includes("x") ? "\n（X は1回ごとに料金がかかります）" : "";
+  return `${to} に今すぐ投稿しますか？\n投稿は取り消せません（消すときはアプリから）${cost}`;
+}
+async function doPublish(name, version) {
+  const res = await fetch(`/api/posts/${encodeURIComponent(name)}/publish`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ version }),
+  });
+  const data = await res.json();
+  return { res, data };
+}
+async function publishNow() {
+  const editing = state.editing;
+  if (!editing || state.sending) return;
+  const targets = [state.ig && "instagram", state.x && "x"].filter(Boolean);
+  if (!confirm(confirmText(targets))) return;
+  state.sending = true; refresh(); $("msg").textContent = "投稿しています…";
+  try {
+    const { res, data } = await doPublish(editing.name, editing.version);
+    if (!res.ok) { $("msg").textContent = data.error || "投稿できませんでした"; return; }
+    if (!data.ok) { $("msg").textContent = (data.log || []).join("\n") || "投稿できませんでした"; await load(); return; }
+    clearForm();
+    closeSheet();
+    toast("投稿しました");
+    await load();
+  } catch (e) {
+    $("msg").textContent = "サーバーにつながりません。sns-post web --publish が動いているか確認してください";
+  } finally {
+    state.sending = false; refresh();
+  }
+}
+$("publishBtn").addEventListener("click", publishNow);
+
+// 一部だけ投稿済みの予約：残りの投稿先に投稿する
+async function publishRest(p) {
+  const rest = p.targets.filter((t) => !p.posted.includes(t));
+  if (!rest.length || !confirm(confirmText(rest))) return;
+  try {
+    const r = await fetch(`/api/posts/${encodeURIComponent(p.name)}`);
+    const d = await r.json();
+    if (!r.ok) { toast(d.error || "予約を開けませんでした"); await load(); return; }
+    const { res, data } = await doPublish(p.name, d.post.version);
+    toast(res.ok && data.ok ? "投稿しました" : (data.error || "投稿できませんでした。記録を見てください"));
+  } catch (e) {
+    toast("サーバーにつながりません");
+  }
+  await load();
+}
+
+async function loadLog() {
+  if (!state.publishEnabled) { $("logBox").hidden = true; return; }
+  try {
+    const { log } = await (await fetch("/api/log")).json();
+    $("logBox").hidden = !log.length;
+    const ul = $("logList");
+    ul.replaceChildren(...log.slice(0, 10).map((e) => {
+      const li = document.createElement("li");
+      li.textContent = `${fmt(new Date(e.at))}  ${e.line}`;
+      if (/^\[(失敗|スキップ|エラー|自動投稿を止めました)\]/.test(e.line)) li.className = "bad";
+      return li;
+    }));
+  } catch (e) { /* つながらないときは前の表示のまま */ }
+}
+
+// 自動投稿の結果が画面に出るよう、入力中でなければ30秒ごとに読み直す
+setInterval(() => { if ($("sheet").hidden) load(); }, 30000);
 load();
 </script>
 </body>

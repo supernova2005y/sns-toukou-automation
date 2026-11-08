@@ -2,8 +2,9 @@
 
 `sns-post web` で起動し、ブラウザで開く。標準ライブラリだけで動く。
 
-- 画面からは投稿ファイルを `posts/queue/` に書き出す・書き換える・取り消すだけ。**ここから投稿はしない**
-  （実際の投稿は今までどおり `sns-post run-due --publish`）
+- 既定（`sns-post web`）では、投稿ファイルを `posts/queue/` に書き出す・書き換える・取り消すだけで、**投稿はしない**
+- `sns-post web --publish` のときだけ、「今すぐ投稿」と、時刻が来た予約の自動投稿（1分ごと）をする。
+  投稿の手順は `run-due --publish` と同じ（publisher.py）
 - 取り消した予約は消さずに `posts/cancelled/` へ移す（間違えても戻せるように）
 - どこか1つにでも投稿済みの予約は、編集も取り消しもできない（二重投稿・記録の食い違いを防ぐため）
 - 既定では自分のPC（127.0.0.1）からしか開けない。認証がないので、外に公開しない
@@ -19,8 +20,9 @@ from importlib import resources
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from .errors import PostFileError
+from .errors import ConfigError, PostFileError
 from .posts import VALID_TARGETS, Post, _parse_time, parse_post, save_post, validate
+from .publisher import BusyError, Publisher, start_auto
 
 MAX_BODY = 64 * 1024
 EXCERPT_LEN = 40
@@ -184,7 +186,25 @@ def _index_html() -> bytes:
     return resources.files("sns_post").joinpath("static/index.html").read_bytes()
 
 
-def make_handler(queue: Path, done: Path, clock=lambda: datetime.now(timezone.utc), cancelled: Path | None = None):
+def publish_post(name: str, version: object, queue: Path, publisher: Publisher | None, now: datetime) -> dict:
+    """画面の「今すぐ投稿」。--publish で起動していなければ断る。"""
+    if publisher is None:
+        raise PermissionError("いまは下見モードです。投稿するには sns-post web --publish で起動し直してください")
+    path = _queue_path(name, queue)
+    if version != file_version(path):
+        raise PostFileError("ほかの場所で予約が変わりました。画面を読み込み直してください")
+    lines = publisher.publish_now(path, now)
+    ok = bool(lines) and not any(line.startswith(("[失敗]", "[スキップ]")) for line in lines)
+    return {"ok": ok, "log": lines}
+
+
+def make_handler(
+    queue: Path,
+    done: Path,
+    clock=lambda: datetime.now(timezone.utc),
+    cancelled: Path | None = None,
+    publisher: Publisher | None = None,
+):
     cancelled = cancelled or queue.parent / "cancelled"
 
     class Handler(BaseHTTPRequestHandler):
@@ -244,6 +264,12 @@ def make_handler(queue: Path, done: Path, clock=lambda: datetime.now(timezone.ut
             except LookupError as e:
                 self._json(HTTPStatus.NOT_FOUND, {"error": str(e).strip("'\"")})
                 return
+            except PermissionError as e:
+                self._json(HTTPStatus.FORBIDDEN, {"error": str(e)})
+                return
+            except BusyError as e:
+                self._json(HTTPStatus.CONFLICT, {"error": str(e)})
+                return
             except (ValueError, PostFileError) as e:
                 msg = str(e).replace("新しい投稿.md: ", "")
                 conflict = "変わりました" in msg or "投稿済み" in msg
@@ -256,9 +282,15 @@ def make_handler(queue: Path, done: Path, clock=lambda: datetime.now(timezone.ut
             if path in ("/", "/index.html"):
                 self._send(HTTPStatus.OK, _index_html(), "text/html; charset=utf-8")
                 return
+            if path == "/api/log":
+                self._json(HTTPStatus.OK, {"log": list(publisher.log) if publisher else []})
+                return
             name, sub = self._route()
             if name is None and sub is None:
-                self._json(HTTPStatus.OK, {"posts": list_posts(queue, done, clock())})
+                self._json(
+                    HTTPStatus.OK,
+                    {"posts": list_posts(queue, done, clock()), "publish_enabled": publisher is not None},
+                )
             elif name and sub is None:
                 self._run(lambda: (HTTPStatus.OK, {"post": read_post(name, queue)}))
             else:
@@ -266,7 +298,7 @@ def make_handler(queue: Path, done: Path, clock=lambda: datetime.now(timezone.ut
 
         def do_POST(self):
             name, sub = self._route()
-            if not (name is None and sub is None) and not (name and sub == "cancel"):
+            if not (name is None and sub is None) and not (name and sub in ("cancel", "publish")):
                 self._json(HTTPStatus.NOT_FOUND, {"error": "見つかりません"})
                 return
             data = self._read_json()
@@ -274,8 +306,11 @@ def make_handler(queue: Path, done: Path, clock=lambda: datetime.now(timezone.ut
                 return
             if name is None:
                 self._run(lambda: (HTTPStatus.CREATED, {"post": _summary(create_post(data, queue, clock()), "scheduled")}))
+                return
+            version = data.get("version") if isinstance(data, dict) else None
+            if sub == "publish":
+                self._run(lambda: (HTTPStatus.OK, publish_post(name, version, queue, publisher, clock())))
             else:
-                version = data.get("version") if isinstance(data, dict) else None
                 self._run(lambda: (HTTPStatus.OK, {"cancelled": cancel_post(name, version, queue, cancelled).name}))
 
         def do_PUT(self):
@@ -291,14 +326,37 @@ def make_handler(queue: Path, done: Path, clock=lambda: datetime.now(timezone.ut
     return Handler
 
 
-def serve(queue: Path, done: Path, host: str = "127.0.0.1", port: int = 8000) -> None:
-    server = ThreadingHTTPServer((host, port), make_handler(queue, done))
-    shown = "localhost" if host in ("127.0.0.1", "localhost") else host
+LOCAL_HOSTS = ("127.0.0.1", "localhost")
+
+
+def serve(
+    queue: Path,
+    done: Path,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    publish: bool = False,
+    interval: float = 60.0,
+) -> None:
+    if publish and host not in LOCAL_HOSTS:
+        # 認証のない画面から、同じネットワークの誰でも投稿できてしまうため
+        raise ConfigError("--publish は自分のPC（--host 127.0.0.1）で開くときだけ使えます")
+    clock = lambda: datetime.now(timezone.utc)  # noqa: E731
+    publisher = Publisher(queue, done) if publish else None
+    server = ThreadingHTTPServer((host, port), make_handler(queue, done, clock, publisher=publisher))
+    shown = "localhost" if host in LOCAL_HOSTS else host
     print(f"予約画面: http://{shown}:{server.server_address[1]}/  （止めるときは Ctrl+C）")
-    print("ここから投稿はしません。投稿は sns-post run-due --publish で行います")
+    stop = None
+    if publisher:
+        stop = start_auto(publisher, clock, interval)
+        print(f"投稿モード: 画面の「今すぐ投稿」と、時刻が来た予約の自動投稿（{int(interval)}秒ごと）をします")
+        print("この画面を止めると、自動投稿も止まります")
+    else:
+        print("下見モード: ここから投稿はしません（投稿するときは sns-post web --publish）")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\n止めました")
     finally:
+        if stop:
+            stop.set()
         server.server_close()

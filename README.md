@@ -106,7 +106,7 @@ x_text: Xだけ文面を変えたいとき（任意）
 - [x] 下見モード、二重投稿の防止、テスト（54件）
 - [x] X の文字数を X と同じ数え方で確認（日本語は1文字=2、URLは23）
 - [ ] 実際のアカウントでの動作確認（**未確認**。テストはAPIの代わりに偽物を使っています）
-- [ ] Instagram の Unified Login（`graph.facebook.com`）での接続（**未確認**。トークンの取得までは済み）
+- [x] Instagram の Unified Login（`graph.facebook.com`）での接続（`sns-post limit` で確認。実際の投稿は**未確認**）
 - [ ] 画像の置き場所（Instagram は公開URLが必要）
 - [ ] 定期実行（PCのタスクスケジューラ、GitHub Actions など）
 - [ ] Instagram の複数枚投稿・動画・リール・ストーリーズ

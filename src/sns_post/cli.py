@@ -113,6 +113,45 @@ def _cmd_web(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_schedule(args: argparse.Namespace, run=None) -> int:
+    from . import schedule
+
+    run = run or schedule.run_command
+    windows = schedule.is_windows()
+    if args.remove or args.status:
+        if not windows:
+            print("Windows 以外では、crontab -e で該当の行を確かめる・消してください")
+            return 0
+        result = run(schedule.windows_delete_args() if args.remove else schedule.windows_query_args())
+        if result.returncode != 0:
+            print(f"見つからないか、操作できませんでした: {(result.stderr or result.stdout).strip()}")
+            return 1
+        print(f"定期実行（{schedule.TASK_NAME}）を消しました" if args.remove else result.stdout.strip())
+        return 0
+
+    publish = not args.dry_run
+    command = schedule.task_command(Path.cwd(), publish=publish, windows=windows)
+    what = "時刻が来た予約を実際に投稿します" if publish else "下見だけします（投稿しない。ログに [下見] が出るかを確かめる用）"
+    print(f"{args.every}分ごとに、{what}")
+    if not windows:
+        print("crontab -e で、次の1行を足してください（自動では書き込みません）:")
+        print(schedule.cron_line(command, args.every))
+        return 0
+    create = schedule.windows_create_args(command, args.every)
+    print(f"  動かすコマンド: {create[create.index('/TR') + 1]}")
+    print(f"  結果の記録: {Path.cwd() / schedule.DEFAULT_LOG}")
+    if not args.install:
+        print("まだ登録していません。登録するときは --install をつけてください")
+        return 0
+    result = run(create)
+    if result.returncode != 0:
+        print(f"登録できませんでした: {(result.stderr or result.stdout).strip()}")
+        return 1
+    print(f"タスクスケジューラに「{schedule.TASK_NAME}」を登録しました。消すときは sns-post schedule --remove")
+    print("PCが動いていてログインしている間だけ動きます")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sns-post", description="Instagram と X への予約投稿（公式APIのみ）")
     p.add_argument(
@@ -140,6 +179,15 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--port", type=int, default=8000)
     w.add_argument("--publish", action="store_true", help="画面から投稿する（今すぐ投稿・時刻が来たら自動投稿）。自分のPCで開くときだけ")
     w.set_defaults(func=_cmd_web)
+
+    s = sub.add_parser("schedule", help="定期実行（N分ごとに run-due --publish）を登録する。既定は表示だけ")
+    s.add_argument("--every", type=int, default=10, help="何分ごとに動かすか（既定 10）")
+    s.add_argument("--dry-run", action="store_true", help="--publish なし（下見だけ）で登録する。まず試すとき用")
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("--install", action="store_true", help="実際に登録する（Windows のタスクスケジューラ）")
+    g.add_argument("--remove", action="store_true", help="登録を消す")
+    g.add_argument("--status", action="store_true", help="登録の状態を見る")
+    s.set_defaults(func=_cmd_schedule)
 
     sub.add_parser("limit", help="Instagram の投稿上限の使用状況").set_defaults(func=_cmd_limit)
     t = sub.add_parser("refresh-token", help="Instagram のトークンを更新し、.env に書き込む（旧 Instagram ログイン方式のみ）")

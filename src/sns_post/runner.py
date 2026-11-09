@@ -15,6 +15,8 @@ from .errors import ApiError
 from .posts import Post, save_post
 from .x import estimate_cost_usd
 
+NOTHING_DUE = "時刻が来た投稿はありません"
+
 
 class _InstagramLike(Protocol):
     def post_image(self, image_url: str, caption: str) -> str: ...
@@ -62,5 +64,5 @@ def run_due(
             shutil.move(str(post.path), str(done_dir / post.path.name))
             log.append(f"[完了] {post.path.name} を done/ に移しました")
     if not log:
-        log.append("時刻が来た投稿はありません")
+        log.append(NOTHING_DUE)
     return log

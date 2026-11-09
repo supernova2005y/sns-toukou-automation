@@ -11,7 +11,7 @@ from . import config
 from .errors import ApiError, ConfigError, PostFileError
 from .instagram import InstagramClient, refresh_token
 from .posts import load_posts
-from .runner import run_due
+from .runner import NOTHING_DUE, run_due
 from .x import XClient
 
 
@@ -24,7 +24,30 @@ def _cmd_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def _append_log(path: str, lines: list[str], now: datetime) -> None:
+    """定期実行の記録。画面がないので、何が起きたかをファイルに残す（本文・トークンは書かない）。"""
+    lines = [line for line in lines if line != NOTHING_DUE]  # 何もない回は書かない（記録が埋もれないように）
+    if not lines:
+        return
+    log = Path(path)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    stamp = now.astimezone().isoformat(timespec="seconds")
+    with log.open("a", encoding="utf-8") as f:
+        for line in lines:
+            f.write(f"{stamp} {line.splitlines()[0]}\n")
+
+
 def _cmd_run_due(args: argparse.Namespace) -> int:
+    if not args.log:
+        return _run_due(args)
+    try:
+        return _run_due(args)
+    except (ConfigError, PostFileError, ApiError) as e:
+        _append_log(args.log, [f"[エラー] {e}"], datetime.now(timezone.utc))
+        raise
+
+
+def _run_due(args: argparse.Namespace) -> int:
     posts = load_posts(args.queue)
     now = datetime.fromisoformat(args.now) if args.now else datetime.now(timezone.utc)
     ig = x = None
@@ -49,6 +72,8 @@ def _cmd_run_due(args: argparse.Namespace) -> int:
         lines = run_due(posts, now, False, Path(args.done), ig, x)
     for line in lines:
         print(line)
+    if args.log:
+        _append_log(args.log, lines, now)
     return 0
 
 
@@ -90,6 +115,10 @@ def _cmd_web(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sns-post", description="Instagram と X への予約投稿（公式APIのみ）")
+    p.add_argument(
+        "-C", dest="workdir", metavar="フォルダ",
+        help="このフォルダで動かす（.env と posts/ の場所）。タスクスケジューラなど、ほかの場所から呼ぶとき用",
+    )
     sub = p.add_subparsers(dest="command", required=True)
 
     c = sub.add_parser("check", help="予約投稿ファイルの書き方を確認する")
@@ -101,6 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--done", default="posts/done")
     r.add_argument("--publish", action="store_true", help="実際に投稿する")
     r.add_argument("--now", help="現在時刻を指定（テスト用。タイムゾーンつきISO形式）")
+    r.add_argument("--log", metavar="ファイル", help="結果を日時つきで追記する（定期実行用。例 posts/run.log）")
     r.set_defaults(func=_cmd_run_due)
 
     w = sub.add_parser("web", help="予約画面をブラウザで開けるようにする（--publish なしなら投稿はしない）")
@@ -119,8 +149,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    config.load_env()
     args = build_parser().parse_args(argv)
+    if args.workdir:
+        import os
+
+        try:
+            os.chdir(args.workdir)
+        except OSError as e:
+            print(f"エラー: -C のフォルダに移れません: {args.workdir}（{e.strerror}）", file=sys.stderr)
+            return 1
+    config.load_env()
     try:
         return args.func(args)
     except (ConfigError, PostFileError, ApiError) as e:

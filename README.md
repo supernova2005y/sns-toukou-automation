@@ -79,6 +79,7 @@ sns-post schedule                # 定期実行の登録内容を表示するだ
 sns-post limit                   # Instagram の投稿上限の使用状況
 sns-post refresh-token           # 旧 Instagram ログイン方式のトークン更新（有効60日）。Unified Login のトークンは期限がないので不要
 pytest                           # テスト
+python -m sns_post check         # sns-post.exe が使えないPC（アプリケーション制御）では、sns-post の代わりに python -m sns_post と書く
 ```
 
 ### 予約画面

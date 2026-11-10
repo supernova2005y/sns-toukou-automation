@@ -7,6 +7,8 @@ name = "sns-post"
 version = "0.1.0"
 description = "Instagram と X への予約投稿を、公式APIだけで行う小さなツール"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
   "requests>=2.31",

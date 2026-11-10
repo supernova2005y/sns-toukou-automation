@@ -4,7 +4,8 @@
 ---
 publish_at: 2026-11-01T12:00:00+09:00   # タイムゾーンつきで書く
 targets: [instagram, x]
-image_url: https://example.com/photo.jpg  # Instagram に投稿するときは必須（JPEG・公開URL）
+image_url: https://example.com/photo.jpg  # Instagram には image_url か image_key のどちらかが必須（JPEG）
+image_key: images/xxxx.jpg                # 画像の置き場所（STORAGE_*）に上げた画像。投稿の直前に期限つきURLにする
 x_text: Xだけ文面を変えたいときに書く（任意）
 ---
 本文（Instagram のキャプション。x_text がなければ X もこの文面）
@@ -55,6 +56,7 @@ class Post:
     targets: list[str]
     text: str
     image_url: str | None = None
+    image_key: str | None = None
     x_text: str | None = None
     results: dict[str, str] = field(default_factory=dict)  # 投稿済みの先 → 投稿ID
 
@@ -112,6 +114,7 @@ def parse_post(path: str | Path) -> Post:
         targets=list(targets),
         text=body,
         image_url=meta.get("image_url"),
+        image_key=meta.get("image_key"),
         x_text=meta.get("x_text"),
         results=dict(meta.get("results") or {}),
     )
@@ -124,10 +127,14 @@ def validate(post: Post) -> None:
     if not post.text and "instagram" in post.targets:
         raise PostFileError(f"{name}: 本文が空です")
     if "instagram" in post.targets:
-        if not post.image_url or not str(post.image_url).startswith("https://"):
-            raise PostFileError(f"{name}: Instagram には https の image_url が必要です")
-        host = urlparse(str(post.image_url)).hostname or ""
-        if "://" in str(post.image_url)[len("https://"):] or "." not in host:
+        if post.image_key:
+            key = str(post.image_key)
+            if key.startswith("/") or ".." in key or not re.fullmatch(r"[A-Za-z0-9._/-]+", key):
+                raise PostFileError(f"{name}: image_key の形が正しくありません: {key}")
+        if not post.image_key and (not post.image_url or not str(post.image_url).startswith("https://")):
+            raise PostFileError(f"{name}: Instagram には https の image_url か、画像の置き場所の image_key が必要です")
+        host = urlparse(str(post.image_url or "https://x.x")).hostname or ""
+        if post.image_url and ("://" in str(post.image_url)[len("https://"):] or "." not in host):
             raise PostFileError(f"{name}: image_url の形が正しくありません（https:// が重なっていないか確認）: {post.image_url}")
         if len(post.text) > IG_CAPTION_MAX:
             raise PostFileError(f"{name}: キャプションが {IG_CAPTION_MAX} 文字を超えています")
@@ -149,6 +156,8 @@ def save_post(post: Post) -> None:
     }
     if post.image_url:
         meta["image_url"] = post.image_url
+    if post.image_key:
+        meta["image_key"] = post.image_key
     if post.x_text:
         meta["x_text"] = post.x_text
     if post.results:

@@ -22,8 +22,23 @@ class _InstagramLike(Protocol):
     def post_image(self, image_url: str, caption: str) -> str: ...
 
 
+class _StoreLike(Protocol):
+    def signed_url(self, key: str, expires: int = ...) -> str: ...
+
+
 class _XLike(Protocol):
     def post_text(self, text: str) -> str: ...
+
+
+def _image_url(post: Post, store: _StoreLike | None) -> str:
+    """投稿に使う画像のURL。image_url があればそれ、なければ image_key から期限つきURLを作る。"""
+    if post.image_url:
+        return post.image_url
+    if post.image_key:
+        if store is None:
+            raise ApiError("画像の置き場所（STORAGE_*）が設定されていません")
+        return store.signed_url(post.image_key)
+    return ""
 
 
 def run_due(
@@ -33,6 +48,7 @@ def run_due(
     done_dir: Path,
     instagram: _InstagramLike | None = None,
     x: _XLike | None = None,
+    image_store: _StoreLike | None = None,
 ) -> list[str]:
     log: list[str] = []
     for post in sorted(posts, key=lambda p: p.publish_at):
@@ -50,7 +66,7 @@ def run_due(
                 continue
             try:
                 if target == "instagram":
-                    media_id = client.post_image(post.image_url or "", post.text_for(target))
+                    media_id = client.post_image(_image_url(post, image_store), post.text_for(target))
                 else:
                     media_id = client.post_text(post.text_for(target))
             except ApiError as e:

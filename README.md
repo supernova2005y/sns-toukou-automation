@@ -42,7 +42,7 @@ posts/queue/*.md ──▶ posts.py（読み込み・書き方チェック）
 ```
 
 - 言語・ライブラリ: Python 3.10+、requests、requests-oauthlib、PyYAML
-- テスト: pytest（84件。API は偽物のクライアントに差し替え）。GitHub Actions で push のたびに自動で実行
+- テスト: pytest（100件。API は偽物のクライアントに差し替え）。GitHub Actions で push のたびに自動で実行
 - 開発の進め方: 生成AI（Claude）と一緒に、仕様の整理 → 実装 → テストの順で作りました
 
 ## このリポジトリの範囲
@@ -119,12 +119,12 @@ x_text: Xだけ文面を変えたいとき（任意）
 
 - [x] 投稿ファイルの読み込みと書き方チェック
 - [x] Instagram（画像1枚）と X（テキスト）の投稿
-- [x] 下見モード、二重投稿の防止、テスト（84件）
+- [x] 下見モード、二重投稿の防止、テスト（100件）
 - [x] X の文字数を X と同じ数え方で確認（日本語は1文字=2、URLは23）
 - [x] 実際のアカウントでの動作確認：Instagram（Unified Login、画像1枚）は投稿・done/ への移動まで確認
 - [ ] 実際のアカウントでの動作確認：X（**未確認**）
 - [x] Instagram の Unified Login（`graph.facebook.com`）での接続と投稿
-- [ ] 画像の置き場所（Instagram は公開URLが必要）
+- [x] 画像の置き場所：S3互換ストレージ＋期限つきURL（`image_key`）。偽のクライアントでのみ確認、実際のバケットと Meta が署名付きURLを取れるかは**未確認**（手順は docs/セットアップ.md）
 - [x] 定期実行：`-C`（作業フォルダ）と `--log`（結果の記録）、`sns-post schedule --install` でタスクスケジューラに登録（Mac・Linux は cron の1行を表示）。手順は `docs/セットアップ.md`（実際のPCでの登録・実行は**未確認**。GitHub Actions は二重投稿のおそれがあるので使わない）
 - [ ] Instagram の複数枚投稿・動画・リール・ストーリーズ
 - [ ] 投稿文の下書き作成の補助

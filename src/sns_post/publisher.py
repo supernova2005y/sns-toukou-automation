@@ -83,10 +83,13 @@ class Publisher:
         done: Path,
         clients: Callable[[set[str]], tuple] = _default_clients,
         history: int = 50,
+        image_store=None,
     ) -> None:
         self.queue = queue
         self.done = done
         self.clients = clients
+        self._image_store = image_store
+        self._store_loaded = image_store is not None
         self.log: deque[dict] = deque(maxlen=history)  # 画面に出す最近の記録
         self._lock = threading.Lock()
 
@@ -94,12 +97,22 @@ class Publisher:
         for line in lines:
             self.log.appendleft({"at": now.isoformat(), "line": line})
 
+    def _store(self):
+        """画像の置き場所。STORAGE_* がなければ None。必要になったときに1回だけ作る。"""
+        if not self._store_loaded:
+            from .storage import store_from_env
+
+            self._image_store = store_from_env()
+            self._store_loaded = True
+        return self._image_store
+
     def _run(self, posts: list[Post], now: datetime) -> list[str]:
         needed = {t for p in posts if p.publish_at <= now for t in p.pending_targets}
         if not needed:
             return []
         ig, x = self.clients(needed)
-        return run_due(posts, now, True, self.done, ig, x)
+        store = self._store() if any(p.image_key and not p.image_url for p in posts) else None
+        return run_due(posts, now, True, self.done, ig, x, store)
 
     def publish_now(self, path: Path, now: datetime) -> list[str]:
         """1件を、予約の時刻を待たずに投稿する（投稿済みの先は飛ばす）。"""

@@ -70,6 +70,34 @@ class XConfig:
     access_token_secret: str = field(repr=False)
 
 
+@dataclass(frozen=True)
+class StorageConfig:
+    """画像の置き場所（S3 互換のクラウドストレージ）。"""
+
+    bucket: str
+    access_key_id: str = field(repr=False)
+    secret_access_key: str = field(repr=False)
+    endpoint_url: str | None = None  # Cloudflare R2 などは必須。AWS S3 なら空でよい
+    region: str = "auto"
+
+
+def storage_from_env() -> StorageConfig | None:
+    """STORAGE_BUCKET がなければ None（画像の置き場所は使わない）。あるのに他が足りなければエラー。"""
+    if not os.environ.get("STORAGE_BUCKET"):
+        return None
+    v = _require(["STORAGE_BUCKET", "STORAGE_ACCESS_KEY_ID", "STORAGE_SECRET_ACCESS_KEY"])
+    endpoint = (os.environ.get("STORAGE_ENDPOINT_URL") or "").strip() or None
+    if endpoint and not endpoint.startswith("https://"):
+        raise ConfigError("STORAGE_ENDPOINT_URL は https:// で始めてください")
+    return StorageConfig(
+        bucket=v["STORAGE_BUCKET"],
+        access_key_id=v["STORAGE_ACCESS_KEY_ID"],
+        secret_access_key=v["STORAGE_SECRET_ACCESS_KEY"],
+        endpoint_url=endpoint,
+        region=os.environ.get("STORAGE_REGION") or "auto",
+    )
+
+
 def instagram_from_env() -> InstagramConfig:
     v = _require(["IG_USER_ID", "IG_ACCESS_TOKEN"])
     login = (os.environ.get("IG_LOGIN") or "unified").strip().lower()

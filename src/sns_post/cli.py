@@ -50,11 +50,15 @@ def _cmd_run_due(args: argparse.Namespace) -> int:
 def _run_due(args: argparse.Namespace) -> int:
     posts = load_posts(args.queue)
     now = datetime.fromisoformat(args.now) if args.now else datetime.now(timezone.utc)
-    ig = x = None
+    ig = x = store = None
     if args.publish:
         needed = {t for p in posts if p.publish_at <= now for t in p.pending_targets}
         if "instagram" in needed:
             ig = InstagramClient(config.instagram_from_env())
+            if any(p.image_key and not p.image_url for p in posts):
+                from .storage import store_from_env
+
+                store = store_from_env()
         if "x" in needed:
             x = XClient(config.x_from_env())
     else:
@@ -65,7 +69,7 @@ def _run_due(args: argparse.Namespace) -> int:
         try:
             with publish_lock(Path(args.queue).parent):
                 posts = load_posts(args.queue)  # ロックを取ってから読み直す（画面で投稿済みのものを除くため）
-                lines = run_due(posts, now, True, Path(args.done), ig, x)
+                lines = run_due(posts, now, True, Path(args.done), ig, x, store)
         except BusyError as e:
             raise ApiError(str(e)) from e
     else:

@@ -108,7 +108,12 @@ button.sched:hover{border-color:var(--teal)}
   <div class="field" id="imageField">
     <label for="image">画像のURL（Instagram用・https の公開URL）</label>
     <input type="url" id="image" placeholder="https://…/photo.jpg" inputmode="url" autocomplete="off">
-    <p class="hint">いまは画像1枚。PCから画像を選んで置く仕組みはこれから作ります</p>
+    <div id="uploadRow" hidden>
+      <label for="file">またはPCの画像（JPEG）を選ぶ</label>
+      <input type="file" id="file" accept="image/jpeg">
+      <p class="hint" id="fileMsg"></p>
+    </div>
+    <p class="hint">いまは画像1枚。PCの画像は、画像の置き場所（STORAGE_*）を設定したときだけ選べます</p>
   </div>
   <div class="field" id="xTextField">
     <label for="xText">Xだけ別の文面（任意）</label>
@@ -135,7 +140,7 @@ button.sched:hover{border-color:var(--teal)}
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const state = { ig: true, x: true, sending: false, editing: null, publishEnabled: false, loaded: "" };  // editing: { name, version }
+const state = { ig: true, x: true, sending: false, editing: null, publishEnabled: false, uploadEnabled: false, imageKey: "", loaded: "" };  // editing: { name, version }
 
 // X と同じ数え方（日本語は1文字=2、URLは23）。サーバー側の x_weighted_length と同じ
 function xLen(s) {
@@ -222,8 +227,10 @@ function tile(p, i) {
 
 async function load() {
   const res = await fetch("/api/posts");
-  const { posts, publish_enabled } = await res.json();
+  const { posts, publish_enabled, upload_enabled } = await res.json();
   state.publishEnabled = !!publish_enabled;
+  state.uploadEnabled = !!upload_enabled;
+  $("uploadRow").hidden = !state.uploadEnabled;
   $("mode").hidden = false;
   $("mode").className = state.publishEnabled ? "mode on" : "mode";
   $("mode").textContent = state.publishEnabled ? "投稿モード" : "下見モード";
@@ -261,14 +268,34 @@ function refresh() {
   $("whenLabel").textContent = !d ? "日時を選んでください" : future ? `${fmt(d)} にポストします` : "過ぎた日時になっています";
   const img = $("image").value.trim();
   const ok = text.trim() && (state.ig || state.x) && future
-    && !(state.x && xc > 280) && !(state.ig && (text.length > 2200 || !img.startsWith("https://")));
+    && !(state.x && xc > 280) && !(state.ig && (text.length > 2200 || !(img.startsWith("https://") || state.imageKey)));
   $("submitBtn").disabled = !ok || state.sending;
   const dirty = state.editing && snapshot() !== state.loaded;
   $("publishBtn").disabled = state.sending || !!dirty;
   $("publishBtn").textContent = dirty ? "変更を保存してから投稿できます" : "保存した内容で今すぐ投稿";
 }
+function setImageKey(key) {
+  state.imageKey = key;
+  $("file").value = "";
+  $("fileMsg").textContent = key ? "PCの画像を上げてあります（上のURLを入れると、そちらを使います）" : "";
+}
+async function uploadFile() {
+  const f = $("file").files[0];
+  if (!f) return;
+  if (f.type !== "image/jpeg") { $("fileMsg").textContent = "JPEG の画像だけ使えます"; $("file").value = ""; return; }
+  $("fileMsg").textContent = "上げています…";
+  try {
+    const res = await fetch("/api/images", { method: "POST", headers: { "Content-Type": "image/jpeg" }, body: f });
+    const data = await res.json();
+    if (!res.ok) { $("fileMsg").textContent = data.error || "画像を上げられませんでした"; $("file").value = ""; return; }
+    setImageKey(data.image_key);
+  } catch (e) {
+    $("fileMsg").textContent = "サーバーにつながりません";
+  }
+  refresh();
+}
 function snapshot() {
-  return JSON.stringify([$("text").value, $("xText").value, $("image").value, $("when").value, state.ig, state.x]);
+  return JSON.stringify([$("text").value, $("xText").value, $("image").value, state.imageKey, $("when").value, state.ig, state.x]);
 }
 
 let returnFocus = null;
@@ -287,6 +314,7 @@ function showSheet(editing) {
 function openSheet() {
   if (state.editing) {  // 編集の途中の内容は持ち越さない
     ["text", "xText", "image", "when"].forEach((id) => { $(id).value = ""; });
+    setImageKey("");
     state.ig = true; state.x = true;
   }
   if (!$("when").value) $("when").value = localValue(nextDefault());
@@ -301,6 +329,7 @@ async function openEdit(name) {
     $("text").value = p.text;
     $("xText").value = p.x_text || "";
     $("image").value = p.image_url || "";
+    setImageKey(p.image_key || "");
     $("when").value = localValue(new Date(p.publish_at));
     state.ig = p.targets.includes("instagram");
     state.x = p.targets.includes("x");
@@ -315,6 +344,7 @@ function closeSheet() {
 }
 function clearForm() {
   ["text", "xText", "image", "when"].forEach((id) => { $(id).value = ""; });
+  setImageKey("");
   state.ig = true; state.x = true; state.editing = null;
 }
 function toast(t) {
@@ -329,6 +359,7 @@ async function submit() {
     text: $("text").value,
     targets: [state.ig && "instagram", state.x && "x"].filter(Boolean),
     image_url: state.ig ? $("image").value.trim() : null,
+    image_key: state.ig && state.imageKey ? state.imageKey : null,
     x_text: state.x ? $("xText").value.trim() || null : null,
     publish_at: withOffset($("when").value),
   };
@@ -354,6 +385,7 @@ $("closeBtn").addEventListener("click", closeSheet);
 $("scrim").addEventListener("click", closeSheet);
 $("sheet").addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
 ["text", "image", "when"].forEach((id) => $(id).addEventListener("input", refresh));
+$("file").addEventListener("change", uploadFile);
 $("chipIg").addEventListener("click", () => { state.ig = !state.ig; refresh(); });
 $("chipX").addEventListener("click", () => { state.x = !state.x; refresh(); });
 $("submitBtn").addEventListener("click", submit);

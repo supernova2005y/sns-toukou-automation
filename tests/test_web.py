@@ -251,3 +251,77 @@ def test_http_edit_and_cancel_round_trip(server):
 
     status, _ = _call(url, "GET", f"/api/posts/{name}")
     assert status == 404
+
+
+# --- 画像を上げる（偽の置き場所を使う。本物のバケットは呼ばない） ---
+class _FakeStore:
+    def __init__(self):
+        self.saved = []
+
+    def upload(self, data):
+        from sns_post.storage import check_jpeg
+
+        check_jpeg(data)
+        self.saved.append(data)
+        return "images/" + "a" * 32 + ".jpg"
+
+    def signed_url(self, key, expires=3600):
+        return "https://signed.example.com/" + key
+
+
+def _serve(tmp_path, store):
+    h = make_handler(tmp_path / "queue", tmp_path / "done", lambda: NOW, image_store=store)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), h)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_address[1]}"
+
+
+def _post_image(base, body, ctype="image/jpeg", headers=None):
+    req = urllib.request.Request(base + "/api/images", data=body, method="POST", headers={"Content-Type": ctype, **(headers or {})})
+    try:
+        with urllib.request.urlopen(req) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def test_upload_image_returns_key_and_reservation_uses_it(tmp_path):
+    store = _FakeStore()
+    srv, base = _serve(tmp_path, store)
+    try:
+        status, data = _post_image(base, b"\xff\xd8\xff\xe0" + b"0" * 10)
+        assert status == 201 and data["image_key"].startswith("images/")
+        body = {k: v for k, v in GOOD.items() if k != "image_url"} | {"image_key": data["image_key"]}
+        req = urllib.request.Request(base + "/api/posts", data=json.dumps(body).encode(), method="POST", headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req) as r:
+            assert r.status == 201
+    finally:
+        srv.shutdown()
+    saved = parse_post(next((tmp_path / "queue").glob("*.md")))
+    assert saved.image_key == data["image_key"] and saved.image_url is None
+
+
+@pytest.mark.parametrize(
+    "body, ctype, headers, code",
+    [
+        (b"GIF89a....", "image/jpeg", None, 400),  # 中身が JPEG ではない
+        (b"\xff\xd8\xff\xe0", "image/png", None, 415),
+        (b"\xff\xd8\xff\xe0", "image/jpeg", {"Origin": "http://evil.example.com"}, 403),
+    ],
+)
+def test_upload_image_rejects_bad_requests(tmp_path, body, ctype, headers, code):
+    srv, base = _serve(tmp_path, _FakeStore())
+    try:
+        status, _ = _post_image(base, body, ctype, headers)
+    finally:
+        srv.shutdown()
+    assert status == code
+
+
+def test_upload_image_without_store_is_refused(tmp_path):
+    srv, base = _serve(tmp_path, None)
+    try:
+        status, data = _post_image(base, b"\xff\xd8\xff\xe0")
+    finally:
+        srv.shutdown()
+    assert status == 403 and "STORAGE_" in data["error"]

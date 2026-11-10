@@ -20,9 +20,10 @@ from importlib import resources
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from .errors import ConfigError, PostFileError
+from .errors import ApiError, ConfigError, PostFileError
 from .posts import VALID_TARGETS, Post, _parse_time, parse_post, save_post, validate
 from .publisher import BusyError, Publisher, start_auto
+from .storage import MAX_IMAGE_BYTES
 
 MAX_BODY = 64 * 1024
 EXCERPT_LEN = 40
@@ -82,6 +83,9 @@ def _build_post(data: dict, now: datetime) -> Post:
     if publish_at <= now:
         raise PostFileError("投稿する日時が過ぎています。これから先の日時にしてください")
     image_url = str(data.get("image_url") or "").strip() or None
+    image_key = str(data.get("image_key") or "").strip() or None
+    if image_url and image_key:
+        image_key = None  # URL を入れたら、そちらを使う（runner と同じ優先順位）
     x_text = str(data.get("x_text") or "").strip() or None
     targets = list(dict.fromkeys(targets))
     post = Post(
@@ -90,6 +94,7 @@ def _build_post(data: dict, now: datetime) -> Post:
         targets=targets,
         text=text,
         image_url=image_url if "instagram" in targets else None,
+        image_key=image_key if "instagram" in targets else None,
         x_text=x_text if "x" in targets else None,
     )
     validate(post)
@@ -152,6 +157,7 @@ def read_post(name: str, queue: Path) -> dict:
         "targets": post.targets,
         "text": post.text,
         "image_url": post.image_url,
+        "image_key": post.image_key,
         "x_text": post.x_text,
         "editable": not post.results,
     }
@@ -204,6 +210,7 @@ def make_handler(
     clock=lambda: datetime.now(timezone.utc),
     cancelled: Path | None = None,
     publisher: Publisher | None = None,
+    image_store=None,
 ):
     cancelled = cancelled or queue.parent / "cancelled"
 
@@ -267,6 +274,9 @@ def make_handler(
             except PermissionError as e:
                 self._json(HTTPStatus.FORBIDDEN, {"error": str(e)})
                 return
+            except ApiError as e:
+                self._json(HTTPStatus.BAD_GATEWAY, {"error": str(e)})
+                return
             except BusyError as e:
                 self._json(HTTPStatus.CONFLICT, {"error": str(e)})
                 return
@@ -289,14 +299,36 @@ def make_handler(
             if name is None and sub is None:
                 self._json(
                     HTTPStatus.OK,
-                    {"posts": list_posts(queue, done, clock()), "publish_enabled": publisher is not None},
+                    {"posts": list_posts(queue, done, clock()), "publish_enabled": publisher is not None, "upload_enabled": image_store is not None},
                 )
             elif name and sub is None:
                 self._run(lambda: (HTTPStatus.OK, {"post": read_post(name, queue)}))
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "見つかりません"})
 
+        def _upload_image(self) -> None:
+            """画像（JPEG の中身そのもの）を置き場所に上げて、キーを返す。"""
+            if (self.headers.get("Content-Type") or "").split(";")[0].strip() != "image/jpeg":
+                self._json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "JPEG の画像だけ使えます"})
+                return
+            origin = self.headers.get("Origin")
+            if origin and urlsplit(origin).netloc != self.headers.get("Host"):
+                self._json(HTTPStatus.FORBIDDEN, {"error": "この画面以外からは画像を上げられません"})
+                return
+            if image_store is None:
+                self._json(HTTPStatus.FORBIDDEN, {"error": "画像の置き場所が設定されていません（.env の STORAGE_*。手順は docs/セットアップ.md）"})
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0 or length > MAX_IMAGE_BYTES:
+                self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": f"画像は {MAX_IMAGE_BYTES // 1024 // 1024}MB までです"})
+                return
+            data = self.rfile.read(length)
+            self._run(lambda: (HTTPStatus.CREATED, {"image_key": image_store.upload(data)}))
+
         def do_POST(self):
+            if urlsplit(self.path).path == "/api/images":
+                self._upload_image()
+                return
             name, sub = self._route()
             if not (name is None and sub is None) and not (name and sub in ("cancel", "publish")):
                 self._json(HTTPStatus.NOT_FOUND, {"error": "見つかりません"})
@@ -341,8 +373,11 @@ def serve(
         # 認証のない画面から、同じネットワークの誰でも投稿できてしまうため
         raise ConfigError("--publish は自分のPC（--host 127.0.0.1）で開くときだけ使えます")
     clock = lambda: datetime.now(timezone.utc)  # noqa: E731
-    publisher = Publisher(queue, done) if publish else None
-    server = ThreadingHTTPServer((host, port), make_handler(queue, done, clock, publisher=publisher))
+    from .storage import store_from_env
+
+    image_store = store_from_env()  # STORAGE_* がなければ None（画像は URL を手入力する）
+    publisher = Publisher(queue, done, image_store=image_store) if publish else None
+    server = ThreadingHTTPServer((host, port), make_handler(queue, done, clock, publisher=publisher, image_store=image_store))
     shown = "localhost" if host in LOCAL_HOSTS else host
     print(f"予約画面: http://{shown}:{server.server_address[1]}/  （止めるときは Ctrl+C）")
     stop = None

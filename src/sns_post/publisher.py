@@ -111,7 +111,7 @@ class Publisher:
         if not needed:
             return []
         ig, x = self.clients(needed)
-        store = self._store() if any(p.image_key and not p.image_url for p in posts) else None
+        store = self._store() if any(p.needs_store for p in posts) else None
         return run_due(posts, now, True, self.done, ig, x, store)
 
     def publish_now(self, path: Path, now: datetime) -> list[str]:

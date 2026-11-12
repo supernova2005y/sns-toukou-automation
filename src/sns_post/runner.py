@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .errors import ApiError
-from .posts import Post, save_post
+from .posts import Post, is_image_url, save_post
 from .x import estimate_cost_usd
 
 NOTHING_DUE = "時刻が来た投稿はありません"
@@ -20,6 +20,7 @@ NOTHING_DUE = "時刻が来た投稿はありません"
 
 class _InstagramLike(Protocol):
     def post_image(self, image_url: str, caption: str) -> str: ...
+    def post_carousel(self, image_urls: list[str], caption: str) -> str: ...
 
 
 class _StoreLike(Protocol):
@@ -41,6 +42,19 @@ def _image_url(post: Post, store: _StoreLike | None) -> str:
     return ""
 
 
+def _carousel_urls(post: Post, store: _StoreLike | None) -> list[str]:
+    """images の各要素を、投稿に使うURLにする（image_key は期限つきURLに）。"""
+    urls = []
+    for v in post.images:
+        if is_image_url(v):
+            urls.append(v)
+        elif store is None:
+            raise ApiError("画像の置き場所（STORAGE_*）が設定されていません")
+        else:
+            urls.append(store.signed_url(v))
+    return urls
+
+
 def run_due(
     posts: list[Post],
     now: datetime,
@@ -58,6 +72,8 @@ def run_due(
             label = f"{post.path.name} → {target}"
             if not publish:
                 extra = f"（X料金の目安 約{estimate_cost_usd(post.text_for('x')):.3f}ドル）" if target == "x" else ""
+                if target == "instagram" and post.is_carousel:
+                    extra = f"（{len(post.images)}枚）"
                 log.append(f"[下見] {label}{extra}\n    {post.text_for(target)[:60]!r}")
                 continue
             client = instagram if target == "instagram" else x
@@ -65,7 +81,9 @@ def run_due(
                 log.append(f"[スキップ] {label}: 認証情報が設定されていません")
                 continue
             try:
-                if target == "instagram":
+                if target == "instagram" and post.is_carousel:
+                    media_id = client.post_carousel(_carousel_urls(post, image_store), post.text_for(target))
+                elif target == "instagram":
                     media_id = client.post_image(_image_url(post, image_store), post.text_for(target))
                 else:
                     media_id = client.post_text(post.text_for(target))

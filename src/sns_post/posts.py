@@ -6,6 +6,7 @@ publish_at: 2026-11-01T12:00:00+09:00   # タイムゾーンつきで書く
 targets: [instagram, x]
 image_url: https://example.com/photo.jpg  # Instagram には image_url か image_key のどちらかが必須（JPEG）
 image_key: images/xxxx.jpg                # 画像の置き場所（STORAGE_*）に上げた画像。投稿の直前に期限つきURLにする
+images: [https://example.com/1.jpg, images/yyyy.jpg]  # 複数枚（カルーセル、2〜20枚）。URL と image_key を混ぜてよい
 x_text: Xだけ文面を変えたいときに書く（任意）
 ---
 本文（Instagram のキャプション。x_text がなければ X もこの文面）
@@ -26,6 +27,8 @@ from .errors import PostFileError
 VALID_TARGETS = ("instagram", "x")
 IG_CAPTION_MAX = 2200
 IG_HASHTAG_MAX = 30
+IG_CAROUSEL_MIN = 2   # 1枚なら image_url / image_key を使う（公式に下限の記載はない。このツールの決まり）
+IG_CAROUSEL_MAX = 20  # 公式：カルーセルは20枚まで（docs/セットアップ.md の出典）
 X_TEXT_MAX = 280  # Xの「重みつき文字数」の上限。数え方は x_weighted_length()
 
 # X の数え方（twitter-text v3 の設定）。この範囲の文字は1、ほか（日本語・絵文字など）は2と数える
@@ -58,11 +61,23 @@ class Post:
     image_url: str | None = None
     image_key: str | None = None
     x_text: str | None = None
+    images: list[str] = field(default_factory=list)  # 複数枚（カルーセル）。各要素は https のURLか image_key
     results: dict[str, str] = field(default_factory=dict)  # 投稿済みの先 → 投稿ID
 
     @property
     def pending_targets(self) -> list[str]:
         return [t for t in self.targets if t not in self.results]
+
+    @property
+    def is_carousel(self) -> bool:
+        return bool(self.images)
+
+    @property
+    def needs_store(self) -> bool:
+        """画像の置き場所（image_key → 期限つきURL）が要るか。"""
+        if self.images:
+            return any(not is_image_url(v) for v in self.images)
+        return bool(self.image_key and not self.image_url)
 
     def text_for(self, target: str) -> str:
         if target == "x" and self.x_text:
@@ -97,6 +112,32 @@ def _split(raw: str, path: Path) -> tuple[dict, str]:
     return meta, parts[2].strip()
 
 
+def _parse_images(value: object, path: Path) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise PostFileError(f"{path.name}: images は画像のURLか image_key を1行ずつ並べてください（- https://… の形）")
+    return [v.strip() for v in value]
+
+
+def is_image_url(value: str) -> bool:
+    """images の1つが URL か（違えば image_key として扱う）。"""
+    return "://" in value
+
+
+def _check_image_url(name: str, url: str) -> None:
+    if not url.startswith("https://"):
+        raise PostFileError(f"{name}: 画像のURLは https:// で始めてください: {url}")
+    host = urlparse(url).hostname or ""
+    if "://" in url[len("https://"):] or "." not in host:
+        raise PostFileError(f"{name}: image_url の形が正しくありません（https:// が重なっていないか確認）: {url}")
+
+
+def _check_image_key(name: str, key: str) -> None:
+    if key.startswith("/") or ".." in key or not re.fullmatch(r"[A-Za-z0-9._/-]+", key):
+        raise PostFileError(f"{name}: image_key の形が正しくありません: {key}")
+
+
 def parse_post(path: str | Path) -> Post:
     path = Path(path)
     meta, body = _split(path.read_text(encoding="utf-8"), path)
@@ -116,6 +157,7 @@ def parse_post(path: str | Path) -> Post:
         image_url=meta.get("image_url"),
         image_key=meta.get("image_key"),
         x_text=meta.get("x_text"),
+        images=_parse_images(meta.get("images"), path),
         results=dict(meta.get("results") or {}),
     )
     validate(post)
@@ -126,16 +168,26 @@ def validate(post: Post) -> None:
     name = post.path.name
     if not post.text and "instagram" in post.targets:
         raise PostFileError(f"{name}: 本文が空です")
-    if "instagram" in post.targets:
+    if "instagram" in post.targets and post.images:
+        if post.image_url or post.image_key:
+            raise PostFileError(f"{name}: images（複数枚）と image_url / image_key は一緒に書けません。どちらか一方にしてください")
+        if not IG_CAROUSEL_MIN <= len(post.images) <= IG_CAROUSEL_MAX:
+            raise PostFileError(
+                f"{name}: images は {IG_CAROUSEL_MIN}〜{IG_CAROUSEL_MAX} 枚にしてください（今 {len(post.images)} 枚。1枚なら image_url を使います）"
+            )
+        for v in post.images:
+            if is_image_url(v):
+                _check_image_url(name, v)
+            else:
+                _check_image_key(name, v)
+    elif "instagram" in post.targets:
         if post.image_key:
-            key = str(post.image_key)
-            if key.startswith("/") or ".." in key or not re.fullmatch(r"[A-Za-z0-9._/-]+", key):
-                raise PostFileError(f"{name}: image_key の形が正しくありません: {key}")
+            _check_image_key(name, str(post.image_key))
         if not post.image_key and (not post.image_url or not str(post.image_url).startswith("https://")):
             raise PostFileError(f"{name}: Instagram には https の image_url か、画像の置き場所の image_key が必要です")
-        host = urlparse(str(post.image_url or "https://x.x")).hostname or ""
-        if post.image_url and ("://" in str(post.image_url)[len("https://"):] or "." not in host):
-            raise PostFileError(f"{name}: image_url の形が正しくありません（https:// が重なっていないか確認）: {post.image_url}")
+        if post.image_url:
+            _check_image_url(name, str(post.image_url))
+    if "instagram" in post.targets:
         if len(post.text) > IG_CAPTION_MAX:
             raise PostFileError(f"{name}: キャプションが {IG_CAPTION_MAX} 文字を超えています")
         if len(re.findall(r"#\S+", post.text)) > IG_HASHTAG_MAX:
@@ -158,6 +210,8 @@ def save_post(post: Post) -> None:
         meta["image_url"] = post.image_url
     if post.image_key:
         meta["image_key"] = post.image_key
+    if post.images:
+        meta["images"] = post.images
     if post.x_text:
         meta["x_text"] = post.x_text
     if post.results:

@@ -55,7 +55,7 @@ def _run_due(args: argparse.Namespace) -> int:
         needed = {t for p in posts if p.publish_at <= now for t in p.pending_targets}
         if "instagram" in needed:
             ig = InstagramClient(config.instagram_from_env())
-            if any(p.image_key and not p.image_url for p in posts):
+            if any(p.needs_store for p in posts):
                 from .storage import store_from_env
 
                 store = store_from_env()

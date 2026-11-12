@@ -21,7 +21,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from .errors import ApiError, ConfigError, PostFileError
-from .posts import VALID_TARGETS, Post, _parse_time, parse_post, save_post, validate
+from .posts import VALID_TARGETS, Post, _parse_time, is_image_url, parse_post, save_post, validate
 from .publisher import BusyError, Publisher, start_auto
 from .storage import MAX_IMAGE_BYTES
 
@@ -36,7 +36,8 @@ def _summary(post: Post, status: str) -> dict:
         "publish_at": post.publish_at.isoformat(),
         "targets": post.targets,
         "excerpt": post.text.replace("\n", " ")[:EXCERPT_LEN],
-        "image_url": post.image_url,
+        "image_url": post.image_url or next((v for v in post.images if is_image_url(v)), None),  # 一覧の見本（最初のURL）
+        "image_count": len(post.images) or (1 if post.image_url or post.image_key else 0),
         "posted": sorted(post.results),
         "editable": status in ("scheduled", "overdue") and not post.results,
     }
@@ -86,6 +87,15 @@ def _build_post(data: dict, now: datetime) -> Post:
     image_key = str(data.get("image_key") or "").strip() or None
     if image_url and image_key:
         image_key = None  # URL を入れたら、そちらを使う（runner と同じ優先順位）
+    raw_images = data.get("images") or []
+    if not isinstance(raw_images, list) or not all(isinstance(v, str) for v in raw_images):
+        raise PostFileError("画像の指定の形が正しくありません")
+    images = [v.strip() for v in raw_images if v.strip()]
+    if len(images) == 1:  # 1枚ならカルーセルにしない
+        image_url, image_key = (images[0], None) if is_image_url(images[0]) else (None, images[0])
+        images = []
+    elif images:
+        image_url = image_key = None
     x_text = str(data.get("x_text") or "").strip() or None
     targets = list(dict.fromkeys(targets))
     post = Post(
@@ -95,6 +105,7 @@ def _build_post(data: dict, now: datetime) -> Post:
         text=text,
         image_url=image_url if "instagram" in targets else None,
         image_key=image_key if "instagram" in targets else None,
+        images=images if "instagram" in targets else [],
         x_text=x_text if "x" in targets else None,
     )
     validate(post)
@@ -158,6 +169,7 @@ def read_post(name: str, queue: Path) -> dict:
         "text": post.text,
         "image_url": post.image_url,
         "image_key": post.image_key,
+        "images": post.images,
         "x_text": post.x_text,
         "editable": not post.results,
     }

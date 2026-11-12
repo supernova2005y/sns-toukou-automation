@@ -98,8 +98,21 @@ def storage_from_env() -> StorageConfig | None:
     )
 
 
+IG_NAMES = ["IG_USER_ID", "IG_ACCESS_TOKEN"]
+X_NAMES = ["X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET"]
+
+
+def missing_credentials() -> dict[str, list[str]]:
+    """投稿先ごとに、足りない環境変数の名前を返す（値は返さない）。全部そろっている先は入れない。"""
+    missing = {
+        "instagram": [n for n in IG_NAMES if not os.environ.get(n)],
+        "x": [n for n in X_NAMES if not os.environ.get(n)],
+    }
+    return {t: names for t, names in missing.items() if names}
+
+
 def instagram_from_env() -> InstagramConfig:
-    v = _require(["IG_USER_ID", "IG_ACCESS_TOKEN"])
+    v = _require(IG_NAMES)
     login = (os.environ.get("IG_LOGIN") or "unified").strip().lower()
     if login not in IG_HOSTS:
         raise ConfigError(f"IG_LOGIN は {' か '.join(IG_HOSTS)} にしてください（今: {login}）")
@@ -112,7 +125,7 @@ def instagram_from_env() -> InstagramConfig:
 
 
 def x_from_env() -> XConfig:
-    v = _require(["X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET"])
+    v = _require(X_NAMES)
     return XConfig(
         api_key=v["X_API_KEY"],
         api_secret=v["X_API_SECRET"],

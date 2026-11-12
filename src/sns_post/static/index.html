@@ -68,6 +68,8 @@ button.sched:hover{border-color:var(--teal)}
 .logbox ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
 .logbox li{background:var(--sheet);border:1px solid var(--line);border-radius:8px;padding:6px 8px;white-space:pre-wrap;word-break:break-all}
 .logbox li.bad{border-color:var(--red);color:var(--red)}
+.credWarn{margin:0 0 12px;padding:10px 12px;border:1.5px solid var(--red);border-radius:12px;background:var(--redSoft);color:var(--red);font-size:13px;line-height:1.6}
+.credWarn code{font-size:12px}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 16px;border-radius:999px;font-size:14px;white-space:nowrap}
 :focus-visible{outline:2px solid var(--teal);outline-offset:2px}
 [hidden]{display:none!important}
@@ -79,6 +81,7 @@ button.sched:hover{border-color:var(--teal)}
     <h1>投稿<span class="mode" id="mode" hidden></span></h1>
     <div class="counts"><span class="pill" id="countSched">予約 0</span><span class="pill done" id="countDone">済み 0</span></div>
   </header>
+  <div class="credWarn" id="credWarn" role="status" hidden></div>
   <div class="grid" id="grid">
     <button type="button" class="tile new" id="openBtn" aria-label="新しい投稿を予約">
       <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 7v10M7 12h10"/></svg>
@@ -225,9 +228,32 @@ function tile(p, i) {
   return el;
 }
 
+const TARGET_NAMES = { instagram: "Instagram", x: "X" };
+function showCredWarn(missing) {
+  const box = $("credWarn");
+  const targets = Object.keys(missing);
+  box.hidden = targets.length === 0;
+  box.replaceChildren();
+  if (!targets.length) return;
+  const head = document.createElement("strong");
+  head.textContent = "認証情報がない投稿先は、投稿せずスキップします";
+  box.append(head);
+  for (const t of targets) {
+    const line = document.createElement("div");
+    line.append(`${TARGET_NAMES[t] || t}: .env に `);
+    const code = document.createElement("code");
+    code.textContent = missing[t].join(", ");
+    line.append(code, " がありません");
+    box.append(line);
+  }
+  const tail = document.createElement("div");
+  tail.textContent = ".env に書いたら、sns-post web --publish を止めて起動し直してください";
+  box.append(tail);
+}
+
 async function load() {
   const res = await fetch("/api/posts");
-  const { posts, publish_enabled, upload_enabled } = await res.json();
+  const { posts, publish_enabled, upload_enabled, missing_credentials } = await res.json();
   state.publishEnabled = !!publish_enabled;
   state.uploadEnabled = !!upload_enabled;
   $("uploadRow").hidden = !state.uploadEnabled;
@@ -237,6 +263,7 @@ async function load() {
   $("mode").title = state.publishEnabled
     ? "「今すぐ投稿」と、時刻が来た予約の自動投稿をします（この画面のサーバーを止めると止まります）"
     : "ここからは投稿しません。投稿するときは sns-post web --publish で起動します";
+  showCredWarn(missing_credentials || {});
   loadLog();
   const grid = $("grid");
   grid.querySelectorAll(".tile:not(.new), .empty").forEach((n) => n.remove());

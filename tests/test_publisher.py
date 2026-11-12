@@ -199,3 +199,52 @@ def test_cli_run_due_publish_respects_the_lock(tmp_path, monkeypatch, capsys):
                          "--publish", "--now", "2026-11-08T13:00:00+09:00"])
     assert code == 1
     assert "投稿中" in capsys.readouterr().err
+
+
+# --- 認証情報が足りないときの知らせ ---
+
+ALL_CRED = ["IG_USER_ID", "IG_ACCESS_TOKEN", "X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET"]
+
+
+def test_missing_credentials_lists_names_only(monkeypatch):
+    from sns_post.config import missing_credentials
+
+    for n in ALL_CRED:
+        monkeypatch.delenv(n, raising=False)
+    monkeypatch.setenv("IG_USER_ID", "fake-user")
+    assert missing_credentials() == {
+        "instagram": ["IG_ACCESS_TOKEN"],
+        "x": ["X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET"],
+    }
+    monkeypatch.setenv("IG_ACCESS_TOKEN", "fake-token")
+    result = missing_credentials()
+    assert "instagram" not in result
+    assert "fake-token" not in json.dumps(result)  # 値は返さない
+
+
+def test_screen_shows_missing_credentials_only_in_publish_mode(tmp_path):
+    pub, ig, q, d = make(tmp_path)
+    missing = {"instagram": ["IG_ACCESS_TOKEN"]}
+    srv, url = _start(make_handler(q, d, clock=lambda: NOW, publisher=pub, missing_credentials=missing))
+    try:
+        _, data = _call(url, "GET", "/api/posts")
+        assert data["missing_credentials"] == missing
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    srv, url = _start(make_handler(q, d, clock=lambda: NOW, missing_credentials=missing))
+    try:
+        _, data = _call(url, "GET", "/api/posts")
+        assert data["missing_credentials"] == {}  # 下見モードでは認証情報を使わない
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_credential_warnings_text():
+    from sns_post.web import credential_warnings
+
+    assert credential_warnings({}) == []
+    text = "\n".join(credential_warnings({"instagram": ["IG_USER_ID", "IG_ACCESS_TOKEN"]}))
+    assert "Instagram: .env に IG_USER_ID, IG_ACCESS_TOKEN がありません" in text
+    assert "起動し直して" in text

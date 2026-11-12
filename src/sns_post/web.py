@@ -204,6 +204,20 @@ def publish_post(name: str, version: object, queue: Path, publisher: Publisher |
     return {"ok": ok, "log": lines}
 
 
+TARGET_NAMES = {"instagram": "Instagram", "x": "X"}
+
+
+def credential_warnings(missing: dict[str, list[str]]) -> list[str]:
+    """足りない認証情報の知らせ（起動時の表示用）。.env は起動時に1回だけ読むので、直したら起動し直す。"""
+    if not missing:
+        return []
+    lines = ["", "注意: 次の投稿先は認証情報がないため、投稿せずスキップします"]
+    for target, names in missing.items():
+        lines.append(f"  {TARGET_NAMES.get(target, target)}: .env に {', '.join(names)} がありません")
+    lines.append("  .env に書いたら、この画面を止めて起動し直してください（手順は docs/セットアップ.md）")
+    return lines
+
+
 def make_handler(
     queue: Path,
     done: Path,
@@ -211,8 +225,11 @@ def make_handler(
     cancelled: Path | None = None,
     publisher: Publisher | None = None,
     image_store=None,
+    missing_credentials: dict[str, list[str]] | None = None,
 ):
     cancelled = cancelled or queue.parent / "cancelled"
+    # 投稿モードのときだけ画面に出す（下見モードでは認証情報を使わない）
+    missing = (missing_credentials or {}) if publisher is not None else {}
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "sns-post"
@@ -299,7 +316,12 @@ def make_handler(
             if name is None and sub is None:
                 self._json(
                     HTTPStatus.OK,
-                    {"posts": list_posts(queue, done, clock()), "publish_enabled": publisher is not None, "upload_enabled": image_store is not None},
+                    {
+                        "posts": list_posts(queue, done, clock()),
+                        "publish_enabled": publisher is not None,
+                        "upload_enabled": image_store is not None,
+                        "missing_credentials": missing,
+                    },
                 )
             elif name and sub is None:
                 self._run(lambda: (HTTPStatus.OK, {"post": read_post(name, queue)}))
@@ -377,7 +399,13 @@ def serve(
 
     image_store = store_from_env()  # STORAGE_* がなければ None（画像は URL を手入力する）
     publisher = Publisher(queue, done, image_store=image_store) if publish else None
-    server = ThreadingHTTPServer((host, port), make_handler(queue, done, clock, publisher=publisher, image_store=image_store))
+    from .config import missing_credentials
+
+    missing = missing_credentials() if publish else {}
+    server = ThreadingHTTPServer(
+        (host, port),
+        make_handler(queue, done, clock, publisher=publisher, image_store=image_store, missing_credentials=missing),
+    )
     shown = "localhost" if host in LOCAL_HOSTS else host
     print(f"予約画面: http://{shown}:{server.server_address[1]}/  （止めるときは Ctrl+C）")
     stop = None
@@ -385,6 +413,8 @@ def serve(
         stop = start_auto(publisher, clock, interval)
         print(f"投稿モード: 画面の「今すぐ投稿」と、時刻が来た予約の自動投稿（{int(interval)}秒ごと）をします")
         print("この画面を止めると、自動投稿も止まります")
+        for line in credential_warnings(missing):
+            print(line)
     else:
         print("下見モード: ここから投稿はしません（投稿するときは sns-post web --publish）")
     try:

@@ -81,6 +81,53 @@ def _run_due(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_draft_x(args: argparse.Namespace, model=None) -> int:
+    from .draft import draft_x_text
+    from .posts import parse_post, save_post
+
+    path = Path(args.file)
+    if not path.exists() and not path.is_absolute():
+        path = Path(args.queue) / args.file  # 予約のファイル名だけでもよい
+    if not path.exists():
+        raise PostFileError(f"投稿ファイルが見つかりません: {args.file}")
+    post = parse_post(path)
+    if "x" not in post.targets:
+        raise PostFileError(f"{path.name}: targets に x がないので、X の文面は要りません")
+    if post.results:
+        # 予約画面と同じ決まり：一部でも投稿済みの予約は書き換えない（記録の食い違いを防ぐ）
+        raise PostFileError(f"{path.name}: 一部の投稿先に投稿済みなので、文面は変えません")
+    before = path.read_bytes()
+    if model is None:
+        from .llm import model_from_env
+
+        model = model_from_env()
+    print(f"{model.label} で X 用の文面の下書きを作ります（投稿はしません）\n")
+    draft = draft_x_text(post.text, model)
+    print(draft.text)
+    print(f"\n--- X の文字数 {draft.length}/280（{draft.tries} 回目で収まりました）")
+    for w in draft.warnings:
+        print(f"注意: {w}")
+    print("日時・場所・値段などが本文と同じかは、自分の目で確かめてください")
+    if not args.write:
+        print("\nまだファイルには書いていません。使うときは --write をつけてもう一度（x_text に書き込みます）")
+        return 0
+    from .publisher import BusyError, publish_lock
+
+    # 下書きを作っているあいだに投稿・変更されていたら書かない（投稿中の目印を取ってから確かめる）
+    try:
+        with publish_lock(path.parent.parent):
+            if not path.exists() or path.read_bytes() != before:
+                raise PostFileError(f"{path.name}: 下書きを作っているあいだにファイルが変わったので、書き込みませんでした")
+            if post.x_text:
+                print(f"\nいまの x_text を置き換えます（前の文面: {post.x_text}）")
+            post.x_text = draft.text
+            save_post(post)
+    except BusyError as e:
+        raise ApiError(str(e)) from e
+    print(f"{path.name} の x_text に書き込みました")
+    return 0
+
+
 def _cmd_limit(_: argparse.Namespace) -> int:
     client = InstagramClient(config.instagram_from_env())
     print(json.dumps(client.publishing_limit(), ensure_ascii=False, indent=2))
@@ -192,6 +239,12 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--remove", action="store_true", help="登録を消す")
     g.add_argument("--status", action="store_true", help="登録の状態を見る")
     s.set_defaults(func=_cmd_schedule)
+
+    d = sub.add_parser("draft-x", help="生成AIで X 用の文面（x_text）の下書きを作る。投稿はしない")
+    d.add_argument("file", help="投稿ファイル（パス、または posts/queue の中のファイル名）")
+    d.add_argument("--queue", default="posts/queue")
+    d.add_argument("--write", action="store_true", help="下書きをファイルの x_text に書き込む")
+    d.set_defaults(func=_cmd_draft_x)
 
     sub.add_parser("limit", help="Instagram の投稿上限の使用状況").set_defaults(func=_cmd_limit)
     t = sub.add_parser("refresh-token", help="Instagram のトークンを更新し、.env に書き込む（旧 Instagram ログイン方式のみ）")

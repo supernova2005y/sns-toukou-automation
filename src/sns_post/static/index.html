@@ -125,6 +125,7 @@ button.sched:hover{border-color:var(--teal)}
   <div class="field" id="xTextField">
     <label for="xText">Xだけ別の文面（任意）</label>
     <textarea id="xText" rows="2" placeholder="空ならXにも上の本文を投稿します"></textarea>
+    <p class="hint" id="draftRow" hidden><button type="button" class="linkBtn" id="draftBtn" style="margin-left:0">AIで下書き（280字に収める）</button> <span id="draftMsg"></span></p>
   </div>
   <div class="chips">
     <button type="button" class="chip" id="chipIg" aria-pressed="true">Instagram</button>
@@ -257,7 +258,8 @@ function showCredWarn(missing) {
 
 async function load() {
   const res = await fetch("/api/posts");
-  const { posts, publish_enabled, upload_enabled, missing_credentials } = await res.json();
+  const { posts, publish_enabled, upload_enabled, missing_credentials, draft_enabled } = await res.json();
+  $("draftRow").hidden = !draft_enabled;
   state.publishEnabled = !!publish_enabled;
   state.uploadEnabled = !!upload_enabled;
   $("uploadRow").hidden = !state.uploadEnabled;
@@ -397,6 +399,7 @@ function closeSheet() {
 function clearForm() {
   ["text", "xText", "image", "when"].forEach((id) => { $(id).value = ""; });
   setImageKeys([]);
+  $("draftMsg").textContent = "";
   state.ig = true; state.x = true; state.editing = null;
 }
 function toast(t) {
@@ -465,6 +468,28 @@ async function cancelPost() {
 }
 $("cancelBtn").addEventListener("click", cancelPost);
 $("xText").addEventListener("input", refresh);
+
+async function draftX() {
+  const text = $("text").value.trim();
+  if (!text) { $("draftMsg").textContent = "先に上の本文を書いてください"; return; }
+  if ($("xText").value.trim() && !confirm("いまの「Xだけ別の文面」を、AIの下書きで置き換えますか？")) return;
+  $("draftBtn").disabled = true;
+  $("draftMsg").textContent = "作っています…（投稿はしません）";
+  try {
+    const res = await fetch("/api/draft-x", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+    const data = await res.json();
+    if (!res.ok) { $("draftMsg").textContent = data.error || "下書きを作れませんでした"; return; }
+    $("xText").value = data.x_text;
+    const warn = (data.warnings || []).join(" / ");
+    $("draftMsg").textContent = `${data.model} の下書き（${data.length}/280）。日時・場所・値段が本文と同じか確かめてから予約してください` + (warn ? `。注意: ${warn}` : "");
+    refresh();
+  } catch (e) {
+    $("draftMsg").textContent = "サーバーにつながりません。sns-post web が動いているか確認してください";
+  } finally {
+    $("draftBtn").disabled = false;
+  }
+}
+$("draftBtn").addEventListener("click", draftX);
 
 function confirmText(targets) {
   const to = targets.map((t) => TARGET[t] || t).join("・");

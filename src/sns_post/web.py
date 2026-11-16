@@ -238,6 +238,7 @@ def make_handler(
     publisher: Publisher | None = None,
     image_store=None,
     missing_credentials: dict[str, list[str]] | None = None,
+    drafter=None,
 ):
     cancelled = cancelled or queue.parent / "cancelled"
     # 投稿モードのときだけ画面に出す（下見モードでは認証情報を使わない）
@@ -333,6 +334,7 @@ def make_handler(
                         "publish_enabled": publisher is not None,
                         "upload_enabled": image_store is not None,
                         "missing_credentials": missing,
+                        "draft_enabled": drafter is not None,
                     },
                 )
             elif name and sub is None:
@@ -359,9 +361,33 @@ def make_handler(
             data = self.rfile.read(length)
             self._run(lambda: (HTTPStatus.CREATED, {"image_key": image_store.upload(data)}))
 
+        def _draft_x(self) -> None:
+            """本文から X 用の文面の下書きを作って返す。ファイルには書かない（入力欄に入れるだけ）。"""
+            data = self._read_json()
+            if data is None:
+                return
+            if drafter is None:
+                self._json(HTTPStatus.FORBIDDEN, {"error": "生成AIが設定されていません（.env の LLM_PROVIDER と API キー。手順は docs/セットアップ.md）"})
+                return
+            text = data.get("text") if isinstance(data, dict) else None
+            if not isinstance(text, str):
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "本文を送ってください"})
+                return
+            from .draft import draft_x_text
+
+            def action():
+                d = draft_x_text(text, drafter)
+                return HTTPStatus.OK, {"x_text": d.text, "length": d.length, "model": d.model, "warnings": d.warnings}
+
+            self._run(action)
+
         def do_POST(self):
-            if urlsplit(self.path).path == "/api/images":
+            path = urlsplit(self.path).path
+            if path == "/api/images":
                 self._upload_image()
+                return
+            if path == "/api/draft-x":
+                self._draft_x()
                 return
             name, sub = self._route()
             if not (name is None and sub is None) and not (name and sub in ("cancel", "publish")):
@@ -414,9 +440,19 @@ def serve(
     from .config import missing_credentials
 
     missing = missing_credentials() if publish else {}
+    drafter = None
+    from .llm import llm_configured, model_from_env
+
+    if llm_configured():
+        try:
+            drafter = model_from_env()
+        except ConfigError as e:
+            print(f"注意: X の文面の下書きは使えません（{e}）")
     server = ThreadingHTTPServer(
         (host, port),
-        make_handler(queue, done, clock, publisher=publisher, image_store=image_store, missing_credentials=missing),
+        make_handler(
+            queue, done, clock, publisher=publisher, image_store=image_store, missing_credentials=missing, drafter=drafter
+        ),
     )
     shown = "localhost" if host in LOCAL_HOSTS else host
     print(f"予約画面: http://{shown}:{server.server_address[1]}/  （止めるときは Ctrl+C）")
@@ -429,6 +465,8 @@ def serve(
             print(line)
     else:
         print("下見モード: ここから投稿はしません（投稿するときは sns-post web --publish）")
+    if drafter:
+        print(f"X の文面の下書き: {drafter.label}（「AIで下書き」を押したときだけ呼びます。1回ごとに料金がかかります）")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

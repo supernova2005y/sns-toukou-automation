@@ -155,6 +155,58 @@ def test_gemini_model_passes_system_and_model():
     assert m.label == "Gemini（gemini-3.8-flash）"
 
 
+def _gemini_error(code):
+    """SDK があれば本物の APIError、なければ code だけ持つ例外（どちらでも同じに扱われる）。"""
+    try:
+        from google.genai.errors import APIError
+    except ImportError:
+        e = Exception(f"{code} UNAVAILABLE")
+        e.code = code
+        return e
+    return APIError(code, {"error": {"code": code, "message": "busy", "status": "UNAVAILABLE"}})
+
+
+class FlakyGeminiClient(FakeGeminiClient):
+    """先に errors を順に投げ、そのあと text を返す。"""
+
+    def __init__(self, text, errors):
+        super().__init__(text)
+        self._errors = list(errors)
+
+    def generate_content(self, **kw):
+        self.calls.append(kw)
+        if self._errors:
+            raise self._errors.pop(0)
+        return SimpleNamespace(text=self._text)
+
+
+def test_gemini_retries_when_busy(capsys):
+    waits = []
+    client = FlakyGeminiClient("下書き", [_gemini_error(503), _gemini_error(429)])
+    m = GeminiModel(LLMConfig("gemini", "g", "k"), client=client, sleep=waits.append)
+    assert m.generate("s", "p") == "下書き"
+    assert len(client.calls) == 3 and waits == [2, 5]
+    assert "送り直します" in capsys.readouterr().out
+
+
+def test_gemini_gives_up_after_three_busy_replies():
+    waits = []
+    client = FlakyGeminiClient("下書き", [_gemini_error(503)] * 3)
+    m = GeminiModel(LLMConfig("gemini", "g", "k"), client=client, sleep=waits.append)
+    with pytest.raises(ApiError, match="503"):
+        m.generate("s", "p")
+    assert len(client.calls) == 3 and waits == [2, 5]
+
+
+def test_gemini_does_not_retry_other_errors():
+    waits = []
+    client = FlakyGeminiClient("下書き", [_gemini_error(400)])
+    m = GeminiModel(LLMConfig("gemini", "g", "k"), client=client, sleep=waits.append)
+    with pytest.raises(ApiError, match="400"):
+        m.generate("s", "p")
+    assert len(client.calls) == 1 and waits == []
+
+
 def test_gemini_empty_reply_is_an_error():
     m = GeminiModel(LLMConfig("gemini", "g", "k"), client=FakeGeminiClient(None))
     with pytest.raises(ApiError, match="返ってきませんでした"):

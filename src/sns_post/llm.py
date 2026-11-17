@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -26,6 +27,9 @@ MODEL_NAMES = {
     "claude": "CLAUDE_MODEL",
 }
 MAX_OUTPUT_TOKENS = 16000  # 下書きは短いが、考える分（thinking）もここに含まれるので小さくしない
+TIMEOUT_SECONDS = 60  # 返事を待つ上限。来なければエラーにして止める（待ち続けないように）
+RETRY_CODES = (429, 503)  # 回数の上限・混雑。「あとで試して」という一時的なエラーだけ送り直す
+RETRY_WAITS = (2, 5)  # 送り直す前に待つ秒数。最初の1回＋この数だけ送り直す（最大3回）
 
 
 class TextModel(Protocol):
@@ -68,16 +72,19 @@ def _sdk_missing(provider: str) -> ConfigError:
 class GeminiModel:
     """Google の Gemini API（google-genai SDK）。"""
 
-    def __init__(self, config: LLMConfig, client=None) -> None:
+    def __init__(self, config: LLMConfig, client=None, sleep=time.sleep) -> None:
         self.config = config
         self.label = f"Gemini（{config.model}）"
         if client is None:
             try:
                 from google import genai
+                from google.genai import types
             except ImportError as e:
                 raise _sdk_missing("Gemini") from e
-            client = genai.Client(api_key=config.api_key)
+            # timeout はミリ秒（google-genai の HttpOptions）
+            client = genai.Client(api_key=config.api_key, http_options=types.HttpOptions(timeout=TIMEOUT_SECONDS * 1000))
         self.client = client
+        self._sleep = sleep  # テストでは待たない
 
     def generate(self, system: str, prompt: str) -> str:
         try:
@@ -90,9 +97,26 @@ class GeminiModel:
             config = {"system_instruction": system, "max_output_tokens": MAX_OUTPUT_TOKENS}
             sdk_errors = ()
         try:
-            resp = self.client.models.generate_content(model=self.config.model, contents=prompt, config=config)
-        except sdk_errors as e:
-            raise ApiError(f"Gemini API: {str(e)[:300]}") from e
+            import httpx  # google-genai が使う通信ライブラリ。待ち時間を超えるとこの例外になる
+
+            timeouts: tuple[type[BaseException], ...] = (httpx.TimeoutException,)
+        except ImportError:
+            timeouts = ()
+        for wait in (*RETRY_WAITS, None):
+            try:
+                resp = self.client.models.generate_content(model=self.config.model, contents=prompt, config=config)
+                break
+            except Exception as e:
+                if timeouts and isinstance(e, timeouts):
+                    raise ApiError(f"Gemini API: {TIMEOUT_SECONDS} 秒待っても返事がないので止めました。あとでもう一度試してください") from e
+                if sdk_errors and not isinstance(e, sdk_errors):
+                    raise  # API の返事ではない（プログラムの不具合など）。そのまま見せる
+                code = getattr(e, "code", None)
+                if wait is not None and code in RETRY_CODES:
+                    print(f"Gemini API が混んでいます（{code}）。{wait} 秒待って送り直します")
+                    self._sleep(wait)
+                    continue
+                raise ApiError(f"Gemini API: {str(e)[:300]}") from e
         text = (getattr(resp, "text", None) or "").strip()
         if not text:
             raise ApiError("Gemini API: 文章が返ってきませんでした（安全のための判定で止められた可能性があります）")

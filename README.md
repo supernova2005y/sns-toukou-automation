@@ -1,8 +1,18 @@
 # sns-toukou-automation
 
+[![test](https://github.com/supernova2005y/sns-toukou-automation/actions/workflows/test.yml/badge.svg)](https://github.com/supernova2005y/sns-toukou-automation/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+
 Instagram と X に、**公式APIだけ**で予約投稿するための小さなツール。
 Markdown で書いた投稿ファイルを `posts/queue/` に置くと、時刻が来たものを投稿します。
 X 用の短い文面は、**生成AI（Gemini / Claude）で下書き**できます。
+
+| 予約の一覧（`sns-post web`） | 新しい予約（「AIで下書き」つき） |
+|---|---|
+| ![予約の一覧。予約中の2件と、投稿済みの1件](docs/images/list.png) | ![新しい予約の画面。本文を入れると Instagram と X の文字数が出る](docs/images/new.png) |
+
+※ 画面は `examples/` と同じ見本のデータで、下見モード（投稿しない）で撮ったものです。
 
 ## このリポジトリで見てほしいところ
 
@@ -55,8 +65,20 @@ draft.py（X 用の文面の下書き。文字数を数えて作り直させる�
                   posts/done/ に移動
 ```
 
-- 言語・ライブラリ: Python 3.10+、requests、requests-oauthlib、PyYAML。生成AIは google-genai（Gemini）・anthropic（Claude）の公式 SDK（任意）
-- テスト: pytest（153件。SNS の API も生成AIも偽物に差し替え）。GitHub Actions で push のたびに自動で実行
+## 技術スタック
+
+| カテゴリ | 使っているもの |
+|---|---|
+| 言語 | Python 3.10+ |
+| SNS の API | Instagram Graph API（Unified Login）、X API v2（OAuth 1.0a）。requests・requests-oauthlib で直接呼ぶ |
+| 生成AI（任意） | Gemini（google-genai）・Claude（anthropic）の公式 SDK。`.env` の `LLM_PROVIDER` で切り替え |
+| 予約画面 | Python の標準ライブラリだけのローカル Web サーバー＋素の HTML・CSS・JavaScript |
+| 画像の置き場所（任意） | S3 互換ストレージ（boto3）。非公開のバケット＋期限つきURL |
+| データ | Markdown＋YAML の投稿ファイル（PyYAML）。データベースは使わない |
+| テスト | pytest（153件。SNS の API も生成AIも偽物に差し替え） |
+| CI | GitHub Actions（push のたびに Python 3.10 と 3.13 でテスト） |
+| 開発 | Claude Code |
+
 - 開発の進め方: 生成AI（Claude Code）と一緒に、仕様の整理 → 実装 → テストの順で作りました。作業のまとまりごとに小さく commit し、何を・なぜ変えたかをメッセージに書いています
 
 ## このリポジトリの範囲
@@ -75,15 +97,25 @@ draft.py（X 用の文面の下書き。文字数を数えて作り直させる�
 | 下見（dry-run）が既定。`--publish` をつけたときだけ投稿 | 他人のパスワードを預かること |
 | 途中で失敗しても二重投稿しない | |
 
-## 使い方
+## はじめ方
+
+認証情報がなくても、下見モードで画面とテストまで動かせます。
 
 ```bash
-pip install -e ".[dev]"          # 初回だけ
-cp .env.example .env             # 認証情報を入れる（手順は docs/セットアップ.md）
+git clone https://github.com/supernova2005y/sns-toukou-automation.git
+cd sns-toukou-automation
+pip install -e ".[dev]"          # 生成AIの下書きも使うときは ".[dev,llm]"
+pytest                           # テスト（本物の API は呼ばない）
 
-# 1. 投稿ファイルを書く（examples/ のサンプルを参考に）
-cp "examples/2026-11-01_1200_サンプル.md" posts/queue/
+cp .env.example .env             # 実際に投稿するときだけ、認証情報を入れる（手順は docs/セットアップ.md）
+cp "examples/2026-11-01_1200_サンプル.md" posts/queue/   # 見本の投稿ファイルを置く
+sns-post check                   # 書き方の確認
+sns-post web                     # 予約画面 → http://localhost:8000/ （下見モード。投稿はしない）
+```
 
+## 使い方（コマンド一覧）
+
+```bash
 sns-post web                     # 予約画面をブラウザで開く（http://localhost:8000/）。投稿はしない
 sns-post web --publish           # 予約画面から投稿する（今すぐ投稿・時刻が来たら自動投稿）
 sns-post check                   # 書き方の確認

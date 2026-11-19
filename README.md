@@ -185,7 +185,7 @@ images:
 - [ ] 実際のアカウントでの動作確認：X
 - [x] Instagram の Unified Login（`graph.facebook.com`）での接続と投稿
 - [x] 画像の置き場所：S3互換ストレージ＋期限つきURL（`image_key`）。偽のクライアントでのみ確認、実際のバケットと Meta が署名付きURLを取れるかは**未確認**（手順は docs/セットアップ.md）
-- [x] 定期実行：`-C`（作業フォルダ）と `--log`（結果の記録）、`sns-post schedule --install` でタスクスケジューラに登録（Mac・Linux は cron の1行を表示）。手順は `docs/セットアップ.md`（Windows での登録と、下見モードでの定期実行は確認済み。`--publish` での実際の投稿は**未確認**。Mac・Linux も**未確認**。GitHub Actions は二重投稿のおそれがあるので使わない）
+- [x] 定期実行：`-C`（作業フォルダ）と `--log`（結果の記録）、`sns-post schedule --install` でタスクスケジューラに登録（Mac・Linux は cron の1行を表示）。手順は `docs/セットアップ.md`（テストでのみ確認。実際の PC でのタスクスケジューラへの登録・定期実行は**未確認**。Mac・Linux も**未確認**。GitHub Actions は二重投稿のおそれがあるので使わない）
 - [x] Instagram の複数枚投稿（カルーセル、2〜20枚。`images:`。予約画面からも作れる）。偽のAPIでのみ確認、実際のアカウントでは**未確認**
 - [ ] Instagram の動画・リール・ストーリーズ
 - [x] X 用の文面の下書き（生成AI。`sns-post draft-x`・予約画面の「AIで下書き」。Gemini / Claude）。偽のモデルでのみ確認、実際の API キーでは**未確認**

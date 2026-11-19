@@ -6,7 +6,6 @@ import pytest
 from sns_post.errors import ApiError, PostFileError
 from sns_post.posts import parse_post, save_post
 from sns_post.runner import run_due
-from tests.test_clients import FakeResponse, client
 
 JST = timezone(timedelta(hours=9))
 NOW = datetime(2026, 11, 1, 13, 0, tzinfo=JST)
@@ -64,17 +63,17 @@ def test_single_image_post_does_not_need_store_unless_key(tmp_path):
 
 # --- Instagram クライアント ---
 
-def test_post_carousel_flow():
-    c, s = client(
+def test_post_carousel_flow(instagram_client):
+    c, s = instagram_client(
         [
-            FakeResponse({"id": "item-1"}),
-            FakeResponse({"status_code": "FINISHED"}),
-            FakeResponse({"id": "item-2"}),
-            FakeResponse({"status_code": "FINISHED"}),
-            FakeResponse({"id": "carousel-1"}),
-            FakeResponse({"status_code": "IN_PROGRESS"}),
-            FakeResponse({"status_code": "FINISHED"}),
-            FakeResponse({"id": "media-9"}),
+            {"id": "item-1"},
+            {"status_code": "FINISHED"},
+            {"id": "item-2"},
+            {"status_code": "FINISHED"},
+            {"id": "carousel-1"},
+            {"status_code": "IN_PROGRESS"},
+            {"status_code": "FINISHED"},
+            {"id": "media-9"},
         ]
     )
     assert c.post_carousel(["https://example.com/1.jpg", "https://example.com/2.jpg"], "キャプション") == "media-9"
@@ -88,8 +87,8 @@ def test_post_carousel_flow():
         assert "SECRET" not in url
 
 
-def test_post_carousel_stops_before_publish_when_an_item_fails():
-    c, s = client([FakeResponse({"id": "item-1"}), FakeResponse({"status_code": "ERROR"})])
+def test_post_carousel_stops_before_publish_when_an_item_fails(instagram_client):
+    c, s = instagram_client([{"id": "item-1"}, {"status_code": "ERROR"}])
     with pytest.raises(ApiError, match="ERROR"):
         c.post_carousel(["https://example.com/1.jpg", "https://example.com/2.jpg"], "x")
     assert not any(url.endswith("/media_publish") for _, url, _ in s.calls)

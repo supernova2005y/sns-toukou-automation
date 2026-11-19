@@ -9,3 +9,4 @@ __pycache__/
 .pytest_cache/
 posts/.publish.lock
 posts/*.log
+posts/*/*.md

@@ -133,12 +133,21 @@ git clone https://github.com/supernova2005y/sns-toukou-automation.git
 cd sns-toukou-automation
 pip install -e ".[dev]"          # 生成AIの下書きも使うときは ".[dev,llm]"
 pytest                           # テスト（本物の API は呼ばない）
-
-cp .env.example .env             # 実際に投稿するときだけ、認証情報を入れる（手順は docs/セットアップ.md）
 cp "examples/2099-01-01_1200_サンプル.md" posts/queue/   # 見本の投稿ファイルを置く
 sns-post check                   # 書き方の確認
 sns-post web                     # 予約画面 → http://localhost:8000/ （下見モード。投稿はしない）
 ```
+
+必要なもの：Python 3.10 以上と Git。
+
+実際に投稿するまでの流れ（Instagram の準備・トークン・テスト投稿・つまずきやすいところ・読んでおく公式ドキュメント）は [`docs/はじめての投稿.md`](docs/はじめての投稿.md) にまとめています。
+
+| ドキュメント | 中身 |
+|---|---|
+| [`docs/はじめての投稿.md`](docs/はじめての投稿.md) | テスト用アカウントに1件投稿するまでの流れ |
+| [`docs/セットアップ.md`](docs/セットアップ.md) | Instagram・X・画像の置き場所・定期実行・生成AIの細かい手順と出典 |
+| [`docs/仕組みの説明.md`](docs/仕組みの説明.md) | 1回の実行で何が起きるか、よく聞かれそうな「なぜ」 |
+| [`docs/開発の状況.md`](docs/開発の状況.md) | できていること・未確認のこと・TODO |
 
 ## 使い方（コマンド一覧）
 

@@ -111,7 +111,7 @@ pip install -e ".[dev]"          # 生成AIの下書きも使うときは ".[dev
 pytest                           # テスト（本物の API は呼ばない）
 
 cp .env.example .env             # 実際に投稿するときだけ、認証情報を入れる（手順は docs/セットアップ.md）
-cp "examples/2026-11-01_1200_サンプル.md" posts/queue/   # 見本の投稿ファイルを置く
+cp "examples/2099-01-01_1200_サンプル.md" posts/queue/   # 見本の投稿ファイルを置く
 sns-post check                   # 書き方の確認
 sns-post web                     # 予約画面 → http://localhost:8000/ （下見モード。投稿はしない）
 ```
@@ -157,7 +157,7 @@ python -m sns_post check         # sns-post.exe が使えないPC（アプリケ
 
 ```markdown
 ---
-publish_at: 2026-11-01T12:00:00+09:00   # タイムゾーンつきで書く
+publish_at: 2099-01-01T12:00:00+09:00   # タイムゾーンつきで書く
 targets: [instagram, x]
 image_url: https://example.com/photo.jpg  # Instagram には必須（JPEG・公開URL）
 x_text: Xだけ文面を変えたいとき（任意）
@@ -165,7 +165,7 @@ x_text: Xだけ文面を変えたいとき（任意）
 本文。Instagram のキャプションになる。
 ```
 
-複数枚（カルーセル）にするときは、`image_url` の代わりに `images:` に2〜20枚を並べます（見本は `examples/2026-11-01_1800_複数枚サンプル.md`）。URL と、画像の置き場所に上げた `image_key` を混ぜて書けます。予約画面では、URL を1行に1枚書くか、PCの画像をいくつか選ぶと複数枚になります。
+複数枚（カルーセル）にするときは、`image_url` の代わりに `images:` に2〜20枚を並べます（見本は `examples/2099-01-01_1800_複数枚サンプル.md`）。URL と、画像の置き場所に上げた `image_key` を混ぜて書けます。予約画面では、URL を1行に1枚書くか、PCの画像をいくつか選ぶと複数枚になります。
 
 ```markdown
 images:

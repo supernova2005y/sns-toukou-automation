@@ -148,6 +148,9 @@ def parse_post(path: str | Path) -> Post:
     bad = [t for t in targets if t not in VALID_TARGETS]
     if bad:
         raise PostFileError(f"{path.name}: 未対応の投稿先です: {bad}")
+    dup = sorted({t for t in targets if targets.count(t) > 1})
+    if dup:  # 重なっていると、同じ先に2回投稿してしまう
+        raise PostFileError(f"{path.name}: 投稿先が重複しています: {dup}")
 
     post = Post(
         path=path,

@@ -52,6 +52,11 @@ def test_unknown_target(tmp_path):
         parse_post(write(tmp_path, "a.md", GOOD.replace("[instagram, x]", "[tiktok]")))
 
 
+def test_duplicate_target(tmp_path):
+    with pytest.raises(PostFileError, match="重複"):
+        parse_post(write(tmp_path, "a.md", GOOD.replace("[instagram, x]", "[instagram, x, instagram]")))
+
+
 def test_x_text_too_long(tmp_path):
     text = GOOD.replace("こんにちは #テスト", "あ" * 281).replace("[instagram, x]", "[x]")
     with pytest.raises(PostFileError, match="280"):

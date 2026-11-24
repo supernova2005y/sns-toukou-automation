@@ -103,6 +103,23 @@ def test_publish_now_refuses_while_locked(tmp_path):
     assert ig.calls == []
 
 
+def test_lock_is_kept_fresh_while_publishing(tmp_path):
+    # 長い投稿（カルーセル20枚など）の最中に、ほかの処理から「古いロック」とみなされないこと
+    posts = tmp_path / "posts"
+    lock = posts / LOCK_NAME
+    with publish_lock(posts, heartbeat=0.05):
+        old = time.time() - 3600
+        os.utime(lock, (old, old))  # 長く投稿している状態をまねる
+        deadline = time.time() + 5
+        while lock.stat().st_mtime <= old + 1 and time.time() < deadline:
+            time.sleep(0.02)
+        assert time.time() - lock.stat().st_mtime < 60
+        with pytest.raises(BusyError):  # 新しいままなので、ほかの処理は引き継がない
+            with publish_lock(posts):
+                pass
+    assert not lock.exists()
+
+
 def test_stale_lock_is_taken_over(tmp_path):
     posts = tmp_path / "posts"
     posts.mkdir()

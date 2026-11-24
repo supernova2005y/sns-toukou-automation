@@ -24,6 +24,7 @@ from .runner import run_due
 
 LOCK_NAME = ".publish.lock"
 STALE_SECONDS = 15 * 60  # これより古いロックは、前の処理が落ちて残ったものとみなす
+HEARTBEAT_SECONDS = 60.0  # 投稿中はこの間隔でロックの更新時刻を新しくする（長い投稿でも古いとみなされないように）
 
 
 class BusyError(Exception):
@@ -31,8 +32,12 @@ class BusyError(Exception):
 
 
 @contextmanager
-def publish_lock(posts_dir: Path) -> Iterator[None]:
-    """投稿中の目印。同じPCの別のプロセス（コマンド・画面）とも重ならないようにする。"""
+def publish_lock(posts_dir: Path, heartbeat: float = HEARTBEAT_SECONDS) -> Iterator[None]:
+    """投稿中の目印。同じPCの別のプロセス（コマンド・画面）とも重ならないようにする。
+
+    持っている間は heartbeat 秒ごとに更新時刻を新しくする。カルーセル20枚や予約が何件もあると
+    15分を超えることがあるが、動いている間は古いとみなされない。処理が落ちれば更新も止まるので、
+    STALE_SECONDS たてばほかの処理が引き継げる。"""
     posts_dir.mkdir(parents=True, exist_ok=True)
     lock = posts_dir / LOCK_NAME
     for _ in range(2):
@@ -52,9 +57,22 @@ def publish_lock(posts_dir: Path) -> Iterator[None]:
         break
     else:
         raise BusyError("投稿中の目印を作れませんでした。少し待ってからやり直してください")
+    stop = threading.Event()
+
+    def beat() -> None:
+        while not stop.wait(heartbeat):
+            try:
+                os.utime(lock)
+            except OSError:
+                pass  # 消えていたら何もしない（次の回で気づく）
+
+    beater = threading.Thread(target=beat, name="sns-post-lock", daemon=True)
+    beater.start()
     try:
         yield
     finally:
+        stop.set()
+        beater.join()
         lock.unlink(missing_ok=True)
 
 
